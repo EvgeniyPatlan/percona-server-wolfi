@@ -52,6 +52,95 @@ Quick checks without docker builds: `make lint test-unit`.
 Differences from the official image and from Percona's DEB/RPM builds, each with its reason: `docs/deviations.md`.
 Design and its decisions: `docs/design.md`; pins and their sources: `docs/research.md`.
 
+## Running the images
+
+The build publishes to the local registry; the examples use
+
+    IMAGE=localhost:5000/percona-server
+
+Always keep the data on a volume. The images do not declare `VOLUME` (apko cannot), so without `-v` the data lives
+inside the container and is lost with it. The server runs as uid 1001, like the official image.
+
+### `:9.7-dev`: same as the official image
+
+Initialised from environment variables on the first start, exactly like `percona/percona-server:9.7`:
+
+    docker run -d --name ps \
+      -e MYSQL_ROOT_PASSWORD=secret \
+      -v ps-data:/var/lib/mysql \
+      -p 3306:3306 \
+      $IMAGE:9.7-dev
+
+    docker exec -it ps mysql -uroot -p          # or: mysql -h127.0.0.1 -P3306 -uroot -p from the host
+
+Also supported as in the official image: `MYSQL_DATABASE`, `MYSQL_USER`/`MYSQL_PASSWORD`, `MYSQL_RANDOM_ROOT_PASSWORD`,
+`MYSQL_ROOT_HOST`, scripts in `/docker-entrypoint-initdb.d`. MySQL Shell is included (`docker exec -it ps mysqlsh`).
+
+### `:9.7`: distroless
+
+The entrypoint is `mysqld` itself: there is no init script, so the datadir is initialised once, then the server is
+started on it. Arguments after the image name go to `mysqld`.
+
+1. Initialise the volume. `--init-file` sets the root password and creates users in the same step, so the server is
+   never reachable with an empty password:
+
+       cat > init.sql <<'EOF'
+       ALTER USER 'root'@'localhost' IDENTIFIED BY 'secret';
+       CREATE DATABASE appdb;
+       CREATE USER 'app'@'%' IDENTIFIED BY 'apppass';
+       GRANT ALL ON appdb.* TO 'app'@'%';
+       EOF
+
+       docker run --rm \
+         -v ps-data:/var/lib/mysql \
+         -v "$PWD/init.sql:/init.sql:ro" \
+         $IMAGE:9.7 --initialize-insecure --init-file=/init.sql
+
+2. Start the server on it (here with a read-only root filesystem; the two tmpfs mounts are the only other places
+   mysqld writes to, and must be owned by uid 1001):
+
+       docker run -d --name ps \
+         --read-only \
+         --tmpfs /tmp:uid=1001,gid=0,mode=1777 \
+         --tmpfs /run/mysqld:uid=1001,gid=0,mode=0775 \
+         -v ps-data:/var/lib/mysql \
+         -p 3306:3306 \
+         $IMAGE:9.7
+
+3. Connect. The image has the `mysql` client but no shell:
+
+       docker exec -it ps mysql -uroot -p
+       mysql -h127.0.0.1 -P3306 -uapp -papppass appdb        # from the host
+
+An existing datadir (for example one created by `:9.7-dev` or by the official image) needs no step 1.
+
+### Configuration, logs, ports
+
+- Server options: append them to the command (`$IMAGE:9.7 --max-connections=500`; for `:9.7-dev` after the image name
+  too) or mount a file into `/etc/my.cnf.d/`: `-v "$PWD/my.cnf:/etc/my.cnf.d/zz-local.cnf:ro"`.
+- Logs go to stderr: `docker logs ps`.
+- Ports: 3306 (classic) and 33060 (X protocol). They are not declared in the image, so `docker run -P` publishes
+  nothing; use `-p 3306:3306 [-p 33060:33060]`.
+
+### Host folder instead of a named volume
+
+A named volume takes the owner of `/var/lib/mysql` from the image. A host folder has to be writable by uid 1001 first
+(the same applies to the official image):
+
+    sudo mkdir -p /srv/mysql && sudo chown 1001:0 /srv/mysql
+    docker run ... -v /srv/mysql:/var/lib/mysql ...
+
+### Kubernetes
+
+Mount the PVC at `/var/lib/mysql` and run as the image user:
+
+    securityContext:
+      runAsUser: 1001
+      runAsNonRoot: true
+      fsGroup: 1001
+
+For the Percona Operator for MySQL use `:9.7-dev` (the operator calls `mysqlsh` and the entrypoint).
+
 ## Official image vs this build
 
 Measured on 2026-11-16 against `percona/percona-server:9.7` (9.7.2-3.1, pinned by digest as `official_ps_image`).
