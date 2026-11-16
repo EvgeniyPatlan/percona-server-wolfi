@@ -1,0 +1,22 @@
+# Tool container images, pinned by index digest (multi-arch, include linux/amd64).
+# Resolved 2026-11-13 with `docker buildx imagetools inspect`. Tag shown in the comment.
+melange: "cgr.dev/chainguard/melange@sha256:903466973950806a14840b8e8d3e3d1cd89bf18900754378aa60993992c0329e"
+apko: "cgr.dev/chainguard/apko@sha256:1fb716cde344bcf1d98aeb1f63392dbaa8186033fb1827b272d75efc6d5b1270"
+cosign: "cgr.dev/chainguard/cosign@sha256:051861c8b45247c755acfb8ff05bb6741c8cedf2e67d1101faebbf98ec9b9fe0"
+# anchore/grype:latest = 0.121.3
+grype: "anchore/grype@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887"
+# aquasec/trivy:latest = 0.76.2
+trivy: "aquasec/trivy@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb"
+# registry.salsa.debian.org/reproducible-builds/diffoscope:latest
+diffoscope: "registry.salsa.debian.org/reproducible-builds/diffoscope@sha256:833bc8842aebada7068de0c1e1ae7472b42b8bc998b277dbb400a42226444efc"
+# koalaman/shellcheck:stable
+shellcheck: "koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d"
+# registry:2 (image built 2023-10; latest 2.x)
+registry: "registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+# hashicorp/vault:latest = 2.2.2
+vault: "hashicorp/vault@sha256:dfa48c2fa2b0099ccb47681ec5c4804bf5aec9d6879ecfee07ad4b92a5427ad6"
+# python:3.12-slim (for PyKMIP)
+python: "python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
+wolfi_sdk: "ghcr.io/wolfi-dev/sdk@sha256:fad322ab51abb4ee4c27c997239e55fac991d46bee0f5fbef1cef79c4cdabe9d"
+# python:3.12 (Debian bookworm, full: has git, curl, python3) for depot_tools
+depot_env: "python@sha256:cad37dd20c7cac861af9003af8796d03ea7a998ec1e3a664429740fc9d7d2691"

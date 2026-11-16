@@ -1,0 +1,3 @@
+# Installed in the distroless percona-server image: no generated cmd:<interpreter> dependency allowed
+# (scripts/check-no-cmd-deps.sh). percona-server-docker-scripts itself is -dev only.
+percona-server-docker-config

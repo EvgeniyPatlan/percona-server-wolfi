@@ -1,0 +1,74 @@
+Subject: Python.h before the C++ standard headers (python_utils.h, python_object_wrapper.h, main.cc)
+Error: /usr/include/python3.11/pyconfig.h:1793:9: error: '_POSIX_C_SOURCE' redefined [-Werror]
+  /usr/include/features.h:319:10: note: this is the location of the previous definition (202405L)
+  /usr/include/python3.11/pyconfig.h:1817:9: error: '_XOPEN_SOURCE' redefined [-Werror]
+Why: <type_traits> (included first) pulls in glibc's features.h, which with _GNU_SOURCE defines the POSIX.1-2024
+  values (glibc 2.44: 202405L / 800); pyconfig.h then redefines them to 200809L / 700 and the shell builds with
+  -Werror. Every Wolfi Python (3.11-3.14) has the same pyconfig.h values, so no Python choice avoids it. Python's
+  documented rule is to include Python.h before any standard header; then features.h replaces the values with an
+  #undef and nothing warns. Percona's el9/Debian builds use older glibc, where the values are equal.
+Upstream: none found (searched mysql/mysql-shell at tag 9.7.1)
+Drop-when: mysql-shell includes Python.h first upstream, or pyconfig.h and glibc agree again
+--- a/mysqlshdk/include/scripting/python_object_wrapper.h
++++ b/mysqlshdk/include/scripting/python_object_wrapper.h
+@@ -26,9 +26,10 @@
+ #ifndef _PYTHON_OBJECT_WRAPPER_H_
+ #define _PYTHON_OBJECT_WRAPPER_H_
+ 
++#include "scripting/python_context.h"  // Python first: see scripting/python_utils.h
++
+ #include <memory>
+ 
+-#include "scripting/python_context.h"
+ #include "scripting/types.h"
+ 
+ namespace shcore {
+--- a/mysqlshdk/include/scripting/python_utils.h
++++ b/mysqlshdk/include/scripting/python_utils.h
+@@ -26,9 +26,9 @@
+ #ifndef _PYTHON_UTILS_H_
+ #define _PYTHON_UTILS_H_
+ 
+-#include <type_traits>
+-#include <utility>
+-
++// Python.h first (Python's documented rule): it defines _POSIX_C_SOURCE/_XOPEN_SOURCE, which glibc's features.h
++// then replaces cleanly. Included after a C++ header, glibc 2.44 (POSIX.1-2024 values) has already defined
++// them differently and pyconfig.h's redefinition is an error under -Werror.
+ // Include and avoid warnings from v8
+ #if defined __GNUC__
+ #pragma GCC diagnostic push
+@@ -52,6 +52,9 @@
+ #pragma GCC diagnostic pop
+ #endif
+ 
++#include <type_traits>
++#include <utility>
++
+ #define PyString_FromString PyUnicode_FromString
+ #define PyInt_Check PyLong_Check
+ #define PyInt_FromLong PyLong_FromLong
+--- a/src/mysqlsh/main.cc
++++ b/src/mysqlsh/main.cc
+@@ -23,6 +23,11 @@
+  * 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
+  */
+ 
++#ifdef HAVE_PYTHON
++// Python first: see scripting/python_utils.h
++#include "mysqlshdk/include/scripting/python_context.h"
++#endif
++
+ #include "mysqlsh/cmdline_shell.h"
+ #include "mysqlsh/json_shell.h"
+ #include "mysqlshdk/include/shellcore/base_session.h"
+@@ -36,9 +41,6 @@
+ #include "mysqlshdk/libs/utils/utils_general.h"
+ #include "mysqlshdk/libs/utils/utils_path.h"
+ #include "mysqlshdk/libs/utils/utils_string.h"
+-#ifdef HAVE_PYTHON
+-#include "mysqlshdk/include/scripting/python_context.h"
+-#endif
+ 
+ #include <sys/stat.h>
+ #include <clocale>

@@ -1,0 +1,2 @@
+# MTR failures accepted for suite audit_log_filter. One entry per line: <test name> <reason>.
+# Environment-only failures only, each reviewed and approved by the owner; real bugs are patched, not listed.

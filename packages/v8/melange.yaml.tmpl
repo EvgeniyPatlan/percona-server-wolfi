@@ -1,0 +1,187 @@
+package:
+  name: v8
+  version: "@@v8_tag@@"
+  epoch: 0
+  description: V8 JavaScript engine, static monolith build for embedding in Percona Server (build-time only; see v8-dev)
+  copyright:
+    - license: BSD-3-Clause
+  # The main package is intentionally empty: everything lives in v8-dev, which is only ever a
+  # build-time dependency of percona-server and is never installed into runtime images.
+  dependencies:
+    runtime: []
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - gn
+      - ninja-build
+      - python3
+      - pkgconf
+      - binutils
+      - patch
+
+# The V8 tree is NOT downloaded here: scripts/vendor-v8.sh (make vendor-v8) packs it, via depot_tools,
+# into sources/v8-@@v8_tag@@.tar.gz, which melange makes available in the working directory
+# (--source-dir). The recipe checks the pinned sha256 so the build itself needs no network.
+pipeline:
+  - name: Unpack vendored V8 source
+    runs: |
+      tarball="v8-@@v8_tag@@.tar.gz"
+      want="@@v8_src_sha256@@"
+      case "$want" in
+        TODO*) echo "v8_src_sha256 is unresolved: run 'make vendor-v8' and paste the sha into versions/9.7.yaml" >&2; exit 1 ;;
+      esac
+      test -f "$tarball" || { echo "missing $tarball in the source dir: run 'make vendor-v8'" >&2; exit 1; }
+      echo "$want  $tarball" | sha256sum -c -
+      mkdir v8-src
+      tar -xzf "$tarball" --strip-components=1 -C v8-src
+
+  - name: Apply patches
+    runs: |
+      export LC_ALL=C
+      n=0
+      for p in patches/*.patch; do
+        [ -e "$p" ] || continue
+        echo "applying $p"
+        patch -d v8-src -p1 --forward --no-backup-if-mismatch < "$p"
+        n=$((n + 1))
+      done
+      echo "applied $n patch(es)"
+  - name: Configure (gn gen)
+    runs: |
+      cd v8-src
+      # One-line switch: Wolfi's gn is from 2026, V8 12.9 pins gn 54f5b539 (2024-10). If `gn gen` rejects the
+      # 12.9 build files, use the pinned binary shipped in the vendored tree instead:
+      #   GN_BIN=buildtools/linux64/gn   (and add a row to docs/deviations.md)
+      GN_BIN=gn
+      # Reproducibility: GCC reads SOURCE_DATE_EPOCH itself; Chromium's compiler_deterministic config (non-official
+      # builds) already blanks __DATE__/__TIME__/__TIMESTAMP__. Build-dir paths are mapped away with a compiler
+      # wrapper: gn args extra_cflags is not honoured by Chromium's gcc toolchain (only toolchain invokers set it), but
+      # cc_wrapper (build/toolchain/cc_wrapper.gni) is prefixed to cc/cxx. -ffile-prefix-map covers debug and macro
+      # (__FILE__) paths. Verify on the host by building twice in different dirs and diffoscope-ing the .a.
+      : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH must be set}"
+      export SOURCE_DATE_EPOCH
+      wrapper="$PWD/../cc-prefix-map.sh"
+      # GCC 16 / its libstdc++ no longer pull in <cstdint> transitively; V8 12.9 relies on that (first failure:
+      # src/objects/type-hints.h `enum class ... : uint8_t`). C++ compiles get -include cstdint (docs/deviations.md).
+      printf '#!/bin/sh\ncc=$1\nshift\ncase $cc in *++) set -- -include cstdint "$@" ;; esac\nexec "$cc" -ffile-prefix-map=%s=. "$@"\n' "$PWD" > "$wrapper"
+      chmod +x "$wrapper"
+      # gn args are those of Percona's build-ps/build_v8.sh @ Percona-Server-9.7.2-2, plus use_glib=false (Chromium's
+      # Linux default needs glib-2.0 .pc files at gn time; a standalone v8_monolith never uses glib; docs/deviations.md).
+      "$GN_BIN" gen out.gn/static -v --script-executable=python3 --fail-on-unused-args --args='v8_monolithic=true
+                  use_rtti=true
+                  v8_static_library=true
+                  v8_enable_sandbox=false
+                  v8_enable_pointer_compression=false
+                  is_clang=false
+                  is_asan=false
+                  is_debug=false
+                  is_official_build=false
+                  is_component_build=false
+                  treat_warnings_as_errors=false
+                  v8_enable_i18n_support=false
+                  v8_use_external_startup_data=false
+                  use_custom_libcxx=false
+                  v8_enable_maglev=false
+                  use_sysroot=false
+                  use_glib=false
+                  cc_wrapper="'"$wrapper"'"'
+  - name: Build v8_monolith
+    runs: |
+      cd v8-src
+      # Wolfi's ninja-build installs real ninja outside PATH (cmd:ninja is samurai); melange resets PATH, so the
+      # four ninja recipes call it (and pass it to CMake as CMAKE_MAKE_PROGRAM) by absolute path.
+      /usr/lib/ninja-build/bin/ninja -C out.gn/static -j"$(nproc)" v8_monolith
+  - name: Prepare install tree
+    runs: |
+      mkdir -p "${{targets.destdir}}/usr/include/v8" "${{targets.destdir}}/usr/lib/v8"
+      cp -a v8-src/include/. "${{targets.destdir}}/usr/include/v8/"
+      install -m 0644 v8-src/out.gn/static/obj/libv8_monolith.a "${{targets.destdir}}/usr/lib/v8/libv8_monolith.a"
+      strip --strip-debug "${{targets.destdir}}/usr/lib/v8/libv8_monolith.a"
+
+subpackages:
+  - name: v8-dev
+    description: V8 headers and static monolith library (build-time only, never in runtime images)
+    pipeline:
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}/usr/lib"
+          mv "${{targets.destdir}}/usr/include" "${{targets.subpkgdir}}/usr/"
+          mv "${{targets.destdir}}/usr/lib/v8" "${{targets.subpkgdir}}/usr/lib/"
+          install -Dm0644 v8-src/LICENSE "${{targets.subpkgdir}}/usr/share/licenses/v8-dev/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - build-base
+      pipeline:
+        - name: embed V8 and evaluate 1+1
+          runs: |
+            test -f /usr/include/v8/v8.h
+            test -f /usr/include/v8/libplatform/libplatform.h
+            test -f /usr/lib/v8/libv8_monolith.a
+            test -f /usr/share/licenses/v8-dev/LICENSE
+            cat > hello-v8.cc <<'CPP'
+            #include <cstdio>
+            #include <memory>
+            #include "libplatform/libplatform.h"
+            #include "v8.h"
+
+            int main() {
+              std::unique_ptr<v8::Platform> platform = v8::platform::NewDefaultPlatform();
+              v8::V8::InitializePlatform(platform.get());
+              v8::V8::Initialize();
+              v8::Isolate::CreateParams params;
+              params.array_buffer_allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
+              v8::Isolate *isolate = v8::Isolate::New(params);
+              int result = -1;
+              {
+                v8::Isolate::Scope isolate_scope(isolate);
+                v8::HandleScope handle_scope(isolate);
+                v8::Local<v8::Context> context = v8::Context::New(isolate);
+                v8::Context::Scope context_scope(context);
+                v8::Local<v8::String> src = v8::String::NewFromUtf8Literal(isolate, "1+1");
+                v8::Local<v8::Value> v = v8::Script::Compile(context, src).ToLocalChecked()->Run(context).ToLocalChecked();
+                result = v->Int32Value(context).FromJust();
+              }
+              isolate->Dispose();
+              v8::V8::Dispose();
+              v8::V8::DisposePlatform();
+              delete params.array_buffer_allocator;
+              std::printf("%d\n", result);
+              return result == 2 ? 0 : 1;
+            }
+            CPP
+            # Same configuration as the build: no pointer compression, no sandbox (no V8_* defines), RTTI on.
+            g++ -std=c++20 -O1 -I/usr/include/v8 hello-v8.cc -o hello-v8 -L/usr/lib/v8 -lv8_monolith -pthread -ldl
+            ./hello-v8 | grep -x 2
+
+test:
+  # without an environment the test pod holds only the (empty) v8 package: no /bin/sh to run anything
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+  pipeline:
+    - name: main package is an empty placeholder (everything is in v8-dev)
+      runs: |
+        files=$(apk info -qL v8 | grep -v '^var/lib/db/sbom/' || true)
+        [ -z "$files" ] || { echo "v8 must ship no files, found: $files" >&2; exit 1; }
+
+update:
+  enabled: false

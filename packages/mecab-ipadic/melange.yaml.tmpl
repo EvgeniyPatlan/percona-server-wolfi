@@ -1,0 +1,75 @@
+package:
+  name: mecab-ipadic
+  version: "@@mecab_ipadic_apk_version@@"
+  epoch: 0
+  description: IPA dictionary (UTF-8) for MeCab, installed under /usr/lib/mecab/dic/ipadic
+  copyright:
+    - license: LicenseRef-NAIST-2003
+  dependencies:
+    runtime:
+      - mecab
+  # /etc/mecabrc is owned by the mecab package; this package ships only the dictionary.
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - mecab
+      - mecab-dev
+      # gconv modules: mecab-dict-index transcodes the EUC-JP sources to UTF-8 and silently
+      # emits an unusable dictionary without them
+      - glibc-iconv
+
+pipeline:
+  - uses: fetch
+    with:
+      uri: @@mecab_ipadic_url@@
+      expected-sha256: @@mecab_ipadic_sha256@@
+      strip-components: 1
+  - name: Declare dictionary charset in dicrc
+    runs: |
+      # dicrc ships as EUC-JP with config-charset = EUC-JP; with a utf8 dictionary mecab would
+      # transcode all output features back to EUC-JP.
+      sed -i 's/^config-charset = .*/config-charset = UTF-8/' dicrc
+      grep -x 'config-charset = UTF-8' dicrc
+  - name: Configure
+    runs: |
+      ./configure \
+        --prefix=/usr \
+        --libdir=/usr/lib \
+        --with-charset=utf8 \
+        --with-mecab-config=/usr/bin/mecab-config
+  # no -j: the dictionary targets all write the same files and race when parallel
+  - runs: make
+  - uses: autoconf/make-install
+  - uses: strip
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - mecab
+  pipeline:
+    - name: tokenize Japanese
+      runs: |
+        test -f /usr/lib/mecab/dic/ipadic/sys.dic
+        out=$(echo 日本語 | mecab)
+        echo "$out"
+        test "$(echo "$out" | wc -l)" -ge 2
+        echo "$out" | grep -q '^EOS$'
+        # features must be valid UTF-8 (not EUC-JP): the POS of 日本 is 名詞
+        echo "$out" | grep -q '名詞'
+
+update:
+  enabled: false

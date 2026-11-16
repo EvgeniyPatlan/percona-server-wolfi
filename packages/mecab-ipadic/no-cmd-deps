@@ -1,0 +1,3 @@
+# Installed in the distroless percona-server image (via percona-server-server): no cmd:<interpreter> dependency
+# (scripts/check-no-cmd-deps.sh).
+mecab-ipadic

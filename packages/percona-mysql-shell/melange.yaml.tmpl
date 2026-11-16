@@ -1,0 +1,432 @@
+package:
+  name: percona-mysql-shell
+  # apk versions cannot contain "-": mysqlsh_version 9.7.1-2 becomes 9.7.1.2 (same convention as percona-server)
+  version: "@@mysqlsh_apk_version@@"
+  epoch: 0
+  description: Percona build of MySQL Shell @@mysqlsh_version@@ (mysqlsh), built against Percona Server @@ps_version@@-@@ps_release@@ client libraries
+  copyright:
+    - license: GPL-2.0-only
+  dependencies:
+    runtime:
+      # mysqlsh is linked against libjitexecutor.so (DT_NEEDED, JavaScript mode), which lives in the -jit
+      # subpackage so the prebuilt blob is isolated in its own apk. mysqlsh does not start without it.
+      - percona-mysql-shell-jit=${{package.full-version}}
+      # Python modules the bundled plugins (plugins_plugin, debug, util) and mysqlsh.plugin_manager import; the
+      # official rpm bundles its own Python with them, this build uses Wolfi's python-@@mysqlsh_python@@
+      - py@@mysqlsh_python@@-certifi
+      - py@@mysqlsh_python@@-pyyaml
+
+# Build follows Percona's packaging (percona/mysql-shell-packaging mysql-shell_builder.sh, rpm path - the official
+# image is el9; see docs/research.md section 1): a Percona Server tree at ps_tag with Percona's
+# mysql-5.7-sharedlib-rename.patch is configured and only the client-side targets the shell consumes are built;
+# the ANTLR4 C++ runtime 4.13.2 is built shared and bundled; the shell is configured with -DMYSQL_SOURCE_DIR /
+# -DMYSQL_BUILD_DIR, -DHAVE_PYTHON=1, -DWITH_PROTOBUF_LITE=ON and -DJIT_EXECUTOR_LIB (GraalVM polyglot "jit
+# executor" library, Percona's prebuilt download, sha256-pinned). Differences are listed in docs/deviations.md.
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - linux-headers
+      - cmake
+      - ninja-build
+      - ccache
+      - bison
+      - perl
+      - pkgconf
+      - patch
+      - patchelf
+      - git
+      # Percona Server configure + client libraries / client auth plugins
+      - openssl-dev~3.6   # MySQL 9.7 supports OpenSSL 1.1/3.x; Wolfi openssl-dev is 4.0 (docs/deviations.md)
+      - zstd-dev
+      - zlib-dev
+      - lz4-dev
+      - openldap-dev
+      - cyrus-sasl-mit-dev
+      - krb5-dev
+      - libaio-dev
+      - libtirpc-dev
+      - rpcsvc-proto
+      - ncurses-dev
+      # bundled libfido2 (WITH_FIDO=bundled, authentication_webauthn_client) needs libudev on Linux
+      - libudev-dev
+      # mysql-shell
+      - libssh-dev
+      - python-@@mysqlsh_python@@-dev
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/percona-server
+      tag: "@@ps_tag@@"
+      expected-commit: "@@ps_commit@@"
+      recurse-submodules: true
+      destination: ps-src
+
+  # Source tarballs come from the staged --source-dir (scripts/melange-build.sh; `make sources` fetches them):
+  # 9.7.1.tar.gz (mysqlsh_src_url), 4.13.2.tar.gz (antlr4_url) and
+  # polyglot-nativeapi-native-library-lje_23.0.1_x86_64_el8.tar.gz (jit_executor_url).
+  - name: Verify and unpack sources
+    runs: |
+      check() { # check <file> <url> <sha256>
+        case "$2" in */"$1") ;; *) echo "recipe/versions mismatch: $2 does not end in /$1" >&2; exit 1 ;; esac
+        test -f "$1" || { echo "missing $1 in the source dir: run 'make sources'" >&2; exit 1; }
+        echo "$3  $1" | sha256sum -c -
+      }
+      check "@@mysqlsh_tag@@.tar.gz" "@@mysqlsh_src_url@@" "@@mysqlsh_src_sha256@@"
+      check "@@antlr4_version@@.tar.gz" "@@antlr4_url@@" "@@antlr4_sha256@@"
+      check "polyglot-nativeapi-native-library-lje_23.0.1_x86_64_el8.tar.gz" "@@jit_executor_url@@" "@@jit_executor_sha256@@"
+      mkdir shell-src antlr-src
+      tar -xzf "@@mysqlsh_tag@@.tar.gz" --strip-components=1 -C shell-src
+      v=$(awk -F= '/^MYSQL_VERSION_(MAJOR|MINOR|PATCH)=/ { printf "%s%s", sep, $2; sep = "." }' shell-src/MYSQL_VERSION)
+      test "$v" = "@@mysqlsh_tag@@" || { echo "shell-src/MYSQL_VERSION is $v, expected @@mysqlsh_tag@@" >&2; exit 1; }
+      tar -xzf "@@antlr4_version@@.tar.gz" --strip-components=1 -C antlr-src "antlr4-@@antlr4_version@@/runtime/Cpp"
+      # the prebuilt GraalVM polyglot library (libjitexecutor.so + headers), used as-is
+      tar -xzf "polyglot-nativeapi-native-library-lje_23.0.1_x86_64_el8.tar.gz"
+      test -f polyglot-nativeapi-native-library/libjitexecutor.so
+      test -f polyglot-nativeapi-native-library/polyglot_api.h
+
+  - name: Apply patches
+    runs: |
+      export LC_ALL=C
+      # Percona's builder (get_database) renames the client library back to mysqlclient for the shell build:
+      # mysql-shell's FindMySQLx looks for libmysqlclient.a and `mysql_config --libs` "-lmysqlclient".
+      patch -d ps-src -p0 --forward --no-backup-if-mismatch < ps-src/build-ps/rpm/mysql-5.7-sharedlib-rename.patch
+      n=0
+      for p in patches/ps/*.patch; do
+        [ -e "$p" ] || continue
+        echo "applying $p (ps-src)"
+        patch -d ps-src -p1 --forward --no-backup-if-mismatch < "$p"
+        n=$((n + 1))
+      done
+      for p in patches/*.patch; do
+        [ -e "$p" ] || continue
+        echo "applying $p (shell-src)"
+        patch -d shell-src -p1 --forward --no-backup-if-mismatch < "$p"
+        n=$((n + 1))
+      done
+      echo "applied $n local patch(es)"
+
+  - name: Reproducible compiler launcher
+    runs: |
+      top=$(pwd)
+      # Same mechanism as percona-server: a launcher adds a per-object -frandom-seed=<output path> (GCC otherwise
+      # seeds from time/pid) and uses ccache when CCACHE_DIR is set; the workspace path is mapped away via
+      # -ffile-prefix-map in the flags below. Non-semantic.
+      cat > "$top/cc-launcher" <<'SH'
+      #!/bin/sh
+      out= prev=
+      for a in "$@"; do
+        [ "$prev" = "-o" ] && out=$a
+        prev=$a
+      done
+      cc=$1
+      shift
+      if [ -n "$out" ]; then set -- "-frandom-seed=$out" "$@"; fi
+      if [ -n "${CCACHE_DIR:-}" ] && command -v ccache >/dev/null 2>&1; then exec ccache "$cc" "$@"; fi
+      exec "$cc" "$@"
+      SH
+      chmod +x "$top/cc-launcher"
+
+  - name: Configure Percona Server (client libraries only)
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      top=$(pwd)
+      # Percona's builder flags for the shell's server tree (get_database), with system zlib/zstd/lz4 as in our
+      # percona-server package. Melange's default flags are replaced, not extended: shared hardening baseline
+      # (hardening_cflags / hardening_ldflags, ruling R7) plus the path map.
+      export CFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=." CXXFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=."
+      export CPPFLAGS="" LDFLAGS="@@hardening_ldflags@@"
+      # /usr/bin compilers, not Wolfi's /usr/local/bin openssf wrappers (build-base -> openssf-compiler-options): the
+      # wrappers add -specs openssf.spec (_GLIBCXX_ASSERTIONS, -fno-strict-aliasing, ... - not the R7 flag set) and
+      # break under ccache, which resolves the symlink and runs the wrapper as "gcc-wrapper".
+      cmake -S ps-src -B ps-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DWITH_SSL=system -DWITH_CURL=bundled \
+        -DWITH_ZLIB=system -DWITH_ZSTD=system -DWITH_LZ4=system \
+        -DWITH_PROTOBUF=bundled -DWITH_ABSEIL=bundled -DWITH_FIDO=bundled \
+        -DWITH_COREDUMPER=OFF -DALLOW_NO_SSE42=1 \
+        -DWITH_AUTHENTICATION_CLIENT_PLUGINS=ON \
+        -DWITH_ROCKSDB=OFF -DWITH_JS_LANG=OFF -DWITH_UNIT_TESTS=OFF \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_CXX_COMPILER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_C_LINKER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_CXX_LINKER_LAUNCHER="$top/cc-launcher"
+      # hardening baseline reached the cache: compile flags and every link type (LTO links use the same link
+      # lines). CXX/EXE/SHARED are required; C/MODULE are checked when the project defines them.
+      c=ps-build/CMakeCache.txt
+      grep -q '^CMAKE_CXX_FLAGS:STRING=.*-fstack-clash-protection' "$c"
+      grep -q '^CMAKE_EXE_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      grep -q '^CMAKE_SHARED_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      if grep -q '^CMAKE_C_FLAGS:' "$c"; then grep -q '^CMAKE_C_FLAGS:STRING=.*-fstack-clash-protection' "$c"; fi
+      if grep -q '^CMAKE_MODULE_LINKER_FLAGS:' "$c"; then grep -q '^CMAKE_MODULE_LINKER_FLAGS:STRING=.*-z,now' "$c"; fi
+
+  - name: Build Percona Server client targets
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      # What mysql-shell 9.7.1 consumes from MYSQL_BUILD_DIR (its CMake fails without each of these): the static
+      # client library, X client + messages (protobuf-lite) and the bundled protobuf-lite/abseil shared libs,
+      # mysqlbinlog and mysql_binlog_event_standalone (dump/binlog utilities), routing_guidelines-objects (generates
+      # router/src/routing_guidelines/src/parser.cc), and the client auth plugins it bundles. Same list as
+      # Percona's builder (minus gmock, which only the shell's unit tests use).
+      /usr/lib/ninja-build/bin/ninja -C ps-build -j"$(nproc)" \
+        mysqlclient mysqlxclient mysqlxclient_lite mysqlxmessages_lite libprotobuf-lite \
+        mysqlbinlog mysql_binlog_event_standalone routing_guidelines-objects \
+        authentication_kerberos_client authentication_ldap_sasl_client authentication_oci_client \
+        authentication_openid_connect_client authentication_webauthn_client mysql_native_password
+      test -f ps-build/archive_output_directory/libmysqlclient.a
+      test -x ps-build/scripts/mysql_config
+      test -x ps-build/runtime_output_directory/mysqlbinlog
+      test -f ps-build/router/src/routing_guidelines/src/parser.cc
+      ls ps-build/library_output_directory/libprotobuf-lite.so.*
+      if command -v ccache >/dev/null 2>&1 && [ -n "${CCACHE_DIR:-}" ]; then ccache --show-stats || true; fi
+
+  - name: Build ANTLR4 C++ runtime
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      top=$(pwd)
+      export CFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=." CXXFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=."
+      export CPPFLAGS="" LDFLAGS="@@hardening_ldflags@@"
+      # Percona's get_antlr4-runtime: Release, shared, ANTLR4_INSTALL. Tests off (they download googletest).
+      cmake -S antlr-src/runtime/Cpp -B antlr-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib \
+        -DANTLR4_INSTALL=ON -DANTLR_BUILD_SHARED=ON -DANTLR_BUILD_STATIC=OFF -DANTLR_BUILD_CPP_TESTS=OFF \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_CXX_COMPILER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_CXX_LINKER_LAUNCHER="$top/cc-launcher"
+      grep -q '^CMAKE_CXX_FLAGS:STRING=.*-fstack-clash-protection' antlr-build/CMakeCache.txt
+      grep -q '^CMAKE_SHARED_LINKER_FLAGS:STRING=.*-z,now' antlr-build/CMakeCache.txt
+      /usr/lib/ninja-build/bin/ninja -C antlr-build -j"$(nproc)"
+      DESTDIR="$top/antlr-inst" cmake --install antlr-build
+      ls "$top"/antlr-inst/usr/lib/libantlr4-runtime.so.*
+      test -f "$top/antlr-inst/usr/include/antlr4-runtime/antlr4-runtime.h"
+
+  - name: Build curl for mysql-shell (static, from Percona Server's bundled curl)
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      top=$(pwd)
+      # OpenSSL ruling: Wolfi's curl-dev requires the OpenSSL 4 headers, which cannot be installed next to
+      # openssl-dev~3.6, and mysql-shell has no WITH_CURL=bundled. Build Percona Server's bundled curl sources
+      # (ps-src/extra/curl, the curl Percona Server itself uses) as a static PIC libcurl.a against OpenSSL 3.6 and
+      # hand it to the shell with -DWITH_CURL=<prefix> (the shell's CMake prefers the static library there).
+      # Options follow ps-src/extra/curl/CMakeLists.txt (HTTP only, no LDAP/libssh2/libidn2/libpsl/nghttp2,
+      # hidden visibility); zlib/zstd/brotli are off as well so the static link needs only OpenSSL.
+      export CFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=. -fvisibility=hidden"
+      export CPPFLAGS="" LDFLAGS="@@hardening_ldflags@@"
+      # MySQL's copy is meant to be add_subdirectory()'d (no cmake_minimum_required, `find_package(OpenSSL REQUIRED)`
+      # commented out: its parent defines OpenSSL::SSL), so it is built the same way, from a 4-line wrapper project.
+      set -- ps-src/extra/curl/curl-*/CMakeLists.txt
+      [ "$#" -eq 1 ] && [ -f "$1" ] || { echo "expected one ps-src/extra/curl/curl-*/ tree, found: $*" >&2; exit 1; }
+      mkdir -p curl-wrap
+      printf '%s\n' 'cmake_minimum_required(VERSION 3.16)' 'project(curl_for_mysqlsh C)' \
+        'find_package(OpenSSL REQUIRED)' 'add_subdirectory("${CURL_SRC}" curl)' > curl-wrap/CMakeLists.txt
+      cmake -S curl-wrap -B curl-build -DCURL_SRC="$top/$(dirname "$1")" -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX="$top/curl-inst" -DCMAKE_INSTALL_LIBDIR=lib \
+        -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_CURL_EXE=OFF -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF \
+        -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF \
+        -DHTTP_ONLY=ON -DCURL_DISABLE_LDAP=ON -DCURL_USE_OPENSSL=ON \
+        -DCURL_USE_LIBSSH2=OFF -DCURL_USE_LIBSSH=OFF -DCURL_USE_LIBPSL=OFF -DUSE_LIBIDN2=OFF -DUSE_NGHTTP2=OFF \
+        -DCURL_USE_GSSAPI=OFF -DENABLE_ARES=OFF -DCURL_ZLIB=OFF -DCURL_ZSTD=OFF -DCURL_BROTLI=OFF \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/cc-launcher"
+      grep -Eq 'define OPENSSL_VERSION_MAJOR +3$' /usr/include/openssl/opensslv.h
+      /usr/lib/ninja-build/bin/ninja -C curl-build -j"$(nproc)"
+      cmake --install curl-build
+      test -f "$top/curl-inst/lib/libcurl.a"
+      test -f "$top/curl-inst/include/curl/curl.h"
+
+  - name: Configure mysql-shell
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      # No .pyc anywhere: bytecode caches embed source mtimes/sizes (or hashes, depending on the invalidation
+      # mode) and the shell needs none (Python compiles on import). "Fix up the install tree" enforces it.
+      export PYTHONDONTWRITEBYTECODE=1
+      top=$(pwd)
+      py=@@mysqlsh_python@@
+      # Shared hardening baseline (ruling R7), Percona rpm path CXX flags (-Wno-error=... -Wno-odr), path map.
+      # -Wno-error=array-bounds (ours): GCC 16 false positive in ext/linenoise-ng/src/ConvertUTF.cpp:365
+      # (offsetsFromUTF8[extraBytesToRead], index from trailingBytesForUTF8 = 0..5); stays a warning.
+      export CFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=."
+      export CXXFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=. -Wno-error=stringop-overflow -Wno-error=maybe-uninitialized -Wno-odr -Wno-error=array-bounds"
+      export CPPFLAGS="" LDFLAGS="@@hardening_ldflags@@"
+      # The shell's configure checks compile with -Werror; without -O, glibc's "_FORTIFY_SOURCE requires compiling with
+      # optimization" warning (our hardening flags set -D_FORTIFY_SOURCE=2, -O comes from the build type) fails them
+      # (first: "Could not find the linker flag for std::filesystem"). Checks use the build type's -O2 -g too.
+      cmake -S shell-src -B shell-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_TRY_COMPILE_CONFIGURATION=RelWithDebInfo \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DMYSQL_SOURCE_DIR="$top/ps-src" -DMYSQL_BUILD_DIR="$top/ps-build" \
+        -DBUNDLED_ANTLR_DIR="$top/antlr-inst/usr" \
+        -DJIT_EXECUTOR_LIB="$top/polyglot-nativeapi-native-library" \
+        -DHAVE_PYTHON=1 -DUSE_PYTHON_VERSION="$py" \
+        -DPYTHON_EXECUTABLE="/usr/bin/python$py" \
+        -DPYTHON_INCLUDE_DIR="/usr/include/python$py" -DPYTHON_LIBRARY="/usr/lib/libpython$py.so" \
+        -DWITH_PROTOBUF_LITE=ON \
+        -DWITH_SSL=system -DWITH_CURL="$top/curl-inst" -DWITH_ZLIB=system -DWITH_ZSTD=system -DWITH_LZ4=system \
+        -DUSE_LD_GOLD=OFF -DUSE_LD_LLD=OFF \
+        -DPACKAGE_YEAR="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y)" \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_CXX_COMPILER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_C_LINKER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_CXX_LINKER_LAUNCHER="$top/cc-launcher" || {
+        # the try_compile output (why a check failed) is only in the configure log, which dies with the build guest
+        tail -n 300 shell-build/CMakeFiles/CMakeConfigureLog.yaml >&2 || true
+        exit 1
+      }
+      # JavaScript (jit executor) and Python must be enabled, not silently dropped
+      grep -q '^JIT_EXECUTOR_LIBRARY:FILEPATH=.*/libjitexecutor\.so$' shell-build/CMakeCache.txt
+      grep -q -- '-DHAVE_JIT_EXECUTOR' shell-build/build.ninja
+      grep -q -- '-DHAVE_PYTHON=1' shell-build/build.ninja
+      # curl: the static OpenSSL 3 build above, not a system libcurl
+      grep -q "^CURL_LIBRARY:FILEPATH=$top/curl-inst/lib/libcurl.a$" shell-build/CMakeCache.txt
+      # hardening baseline reached the cache: compile flags and every link type (LTO links use the same link
+      # lines). CXX/EXE/SHARED are required; C/MODULE are checked when the project defines them.
+      c=shell-build/CMakeCache.txt
+      grep -q '^CMAKE_CXX_FLAGS:STRING=.*-fstack-clash-protection' "$c"
+      grep -q '^CMAKE_EXE_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      grep -q '^CMAKE_SHARED_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      if grep -q '^CMAKE_C_FLAGS:' "$c"; then grep -q '^CMAKE_C_FLAGS:STRING=.*-fstack-clash-protection' "$c"; fi
+      if grep -q '^CMAKE_MODULE_LINKER_FLAGS:' "$c"; then grep -q '^CMAKE_MODULE_LINKER_FLAGS:STRING=.*-z,now' "$c"; fi
+
+  - name: Build mysql-shell
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@ PYTHONDONTWRITEBYTECODE=1
+      /usr/lib/ninja-build/bin/ninja -C shell-build -j"$(nproc)"
+      if command -v ccache >/dev/null 2>&1 && [ -n "${CCACHE_DIR:-}" ]; then ccache --show-stats || true; fi
+
+  - name: Install
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@ PYTHONDONTWRITEBYTECODE=1
+      DESTDIR="${{targets.destdir}}" cmake --install shell-build
+
+  - name: Fix up the install tree
+    runs: |
+      d="${{targets.destdir}}"
+      # RPM %install removals (packaging/rpm/mysql-shell.spec.in): no dev files, LICENSE/README as docs. Also the
+      # build-host dependent INFO_BIN (kernel, build time) and INFO_SRC, as in percona-server.
+      rm -rf "$d/usr/include"
+      find "$d/usr/lib" -maxdepth 1 \( -name '*.so*' -o -name '*.a' \) -exec rm -f {} +
+      rm -f "$d/usr/share/mysqlsh/LICENSE" "$d/usr/share/mysqlsh/README.md"
+      rm -f "$d/usr/share/mysqlsh/Docs/INFO_BIN" "$d/usr/share/mysqlsh/Docs/INFO_SRC"
+      rmdir "$d/usr/share/mysqlsh/Docs" 2>/dev/null || true
+      install -Dm0644 shell-src/LICENSE "$d/usr/share/licenses/percona-mysql-shell/LICENSE"
+      install -Dm0644 shell-src/README.md "$d/usr/share/licenses/percona-mysql-shell/README.md"
+      # libjitexecutor.so has no DT_SONAME, so the linker records the path it was given (the absolute build
+      # path) as DT_NEEDED. Point mysqlsh at the bare name; its RUNPATH ($ORIGIN/../lib/mysqlsh) finds it.
+      m="$d/usr/bin/mysqlsh"
+      for n in $(readelf -d "$m" | sed -n 's/.*(NEEDED).*\[\(.*jitexecutor[^]]*\)\]$/\1/p'); do
+        if [ "$n" != libjitexecutor.so ]; then
+          echo "rewriting DT_NEEDED $n -> libjitexecutor.so"
+          patchelf --replace-needed "$n" libjitexecutor.so "$m"
+        fi
+      done
+      readelf -d "$m" | grep -q 'NEEDED.*\[libjitexecutor\.so\]'
+      if readelf -d "$m" | grep NEEDED | grep -q '\[/'; then echo "mysqlsh has an absolute DT_NEEDED" >&2; exit 1; fi
+      readelf -d "$m" | grep -E 'R(UN)?PATH' | grep -q 'ORIGIN/../lib/mysqlsh'
+      # the bundled blob must be bit-identical to the pinned download
+      cmp polyglot-nativeapi-native-library/libjitexecutor.so "$d/usr/lib/mysqlsh/libjitexecutor.so"
+      # every installed path outside the RPM %files set is listed for review (and still shipped)
+      expected='^(usr/bin/mysqlsh|usr/bin/mysql-secret-store-login-path|usr/bin/mysql-secret-store-secret-service|usr/libexec/mysqlsh|usr/lib/mysql/plugins|usr/lib/mysqlsh|usr/share/mysqlsh|usr/share/man/man1/mysqlsh\.1|usr/share/licenses/percona-mysql-shell)(/|$)'
+      (cd "$d" && find . -mindepth 1 \( -type f -o -type l \) | sed 's#^\./##' | LC_ALL=C sort) |
+        grep -Ev "$expected" | sed 's/^/UNEXPECTED-PATH (shipped in percona-mysql-shell): /' || true
+      # Python bytecode must not be shipped (not reproducible, not needed); see "Configure mysql-shell"
+      pyc=$(cd "$d" && find . \( -name '*.py[co]' -o -name __pycache__ \) | LC_ALL=C sort)
+      if [ -n "$pyc" ]; then echo "Python bytecode in the install tree:" >&2; echo "$pyc" >&2; exit 1; fi
+      # No file may embed the workspace path (build-path independence). build-path-allowlist (optional, next to
+      # this recipe) lists justified exceptions; scripts/melange-build.sh stages the checker as build-tools/.
+      allow=
+      if [ -f build-path-allowlist ]; then allow=build-path-allowlist; fi
+      # LEAK_SCAN=warn (from `LEAK_SCAN=warn make ...`, via melange-build.sh --env-file): report only, do not fail
+      # /home/build/csu: Wolfi's glibc is built in /home/build too; its crt objects' debug info names that path in every
+      # linked binary (not from this build, constant across hosts, stripped into -dbg by split/debug).
+      LEAK_IGNORE="$(pwd)/csu" LEAK_SCAN="${LEAK_SCAN:-fatal}" bash build-tools/check-build-path-leaks.sh "$d" "$(pwd)" $allow
+  # No `uses: strip` here: percona-mysql-shell-dbg runs split/debug over the tree (after -jit took the blob out).
+
+subpackages:
+  # Order matters: -jit must run first so split/debug in -dbg never touches the prebuilt blob.
+  - name: percona-mysql-shell-jit
+    description: GraalVM polyglot jit executor (libjitexecutor.so, Percona's prebuilt download, sha256-pinned) providing mysqlsh JavaScript mode
+    # Licence: melange has no per-subpackage `copyright`, so the apk carries the package-level GPL-2.0-only; the
+    # blob's own terms are recorded in /usr/share/licenses/percona-mysql-shell-jit/SOURCE. The tarball ships no
+    # LICENSE file; embedded notices (strings) show GPL-2.0-only WITH Classpath-exception-2.0 (GraalVM/OpenJDK) and
+    # Unicode/ICU terms; GraalJS is UPL-1.0. VERIFY-BEFORE-RELEASE against the GraalVM/GraalJS 23.0.1 licence files.
+    dependencies:
+      # libjitexecutor.so has no SONAME, so melange cannot generate a provide for it
+      provides:
+        - so:libjitexecutor.so=0
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/usr/lib/mysqlsh" "$s/usr/share/licenses/percona-mysql-shell-jit"
+          mv "$d/usr/lib/mysqlsh/libjitexecutor.so" "$s/usr/lib/mysqlsh/"
+          cmp polyglot-nativeapi-native-library/libjitexecutor.so "$s/usr/lib/mysqlsh/libjitexecutor.so"
+          install -m0644 polyglot-nativeapi-native-library/maven-archiver/pom.properties \
+            "$s/usr/share/licenses/percona-mysql-shell-jit/pom.properties"
+          cat > "$s/usr/share/licenses/percona-mysql-shell-jit/SOURCE" <<'TXT'
+          libjitexecutor.so is not built from source here. It is the GraalVM polyglot native library Percona
+          downloads for its percona-mysql-shell builds (mysql-shell ext/polyglot), used unmodified:
+            url:    @@jit_executor_url@@
+            sha256: @@jit_executor_sha256@@ (tarball)
+          Licence (from the notices embedded in the library; the tarball has no LICENSE file; unverified):
+            GPL-2.0-only WITH Classpath-exception-2.0 AND UPL-1.0 AND Unicode-3.0
+          See docs/deviations.md (prebuilt-blob exception).
+          TXT
+
+  - name: percona-mysql-shell-dbg
+    description: Debug symbols for percona-mysql-shell
+    pipeline:
+      - uses: split/debug
+    options:
+      no-depends: true
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - percona-mysql-shell
+        - percona-mysql-shell-jit
+        # throwaway mysqld for the --sql checks (local repo, packages/percona-server)
+        - percona-server-server
+        - percona-server-client
+        # readelf for the hardening step
+        - binutils
+  pipeline:
+    - name: smoke test (tests/smoke.sh)
+      runs: |
+        # tests/smoke.sh reaches the test workspace through the staged --source-dir (scripts/melange-build.sh)
+        test -f tests/smoke.sh || { echo "tests/smoke.sh missing from the test workspace (staged source dir)" >&2; exit 1; }
+        MYSQLSH_VERSION="@@mysqlsh_tag@@" bash tests/smoke.sh
+    - name: hardening (RELRO, BIND_NOW, stack protector)
+      runs: |
+        # ruling R7 baseline: full RELRO (-z relro -z now) and -fstack-protector-strong in shipped binaries
+        for f in /usr/bin/mysqlsh; do
+          readelf -lW "$f" | grep -q GNU_RELRO || { echo "$f: no GNU_RELRO segment" >&2; exit 1; }
+          readelf -dW "$f" | grep -Eq '\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' || { echo "$f: neither DT_FLAGS BIND_NOW nor DT_FLAGS_1 NOW" >&2; exit 1; }
+          readelf --dyn-syms -W "$f" | grep __stack_chk_fail >/dev/null || { echo "$f: no __stack_chk_fail import" >&2; exit 1; }
+          echo "ok: $f (RELRO, BIND_NOW, stack protector)"
+        done
+
+update:
+  enabled: false

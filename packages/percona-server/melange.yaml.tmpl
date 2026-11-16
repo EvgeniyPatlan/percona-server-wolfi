@@ -1,0 +1,597 @@
+package:
+  name: percona-server
+  # apk versions cannot contain "-": 9.7.2-2 becomes 9.7.2.2 (sorts correctly against 9.7.2.3 and 9.7.3.x)
+  version: "@@ps_version@@.@@ps_release@@"
+  epoch: 0
+  description: Percona Server for MySQL @@ps_version@@-@@ps_release@@ (meta package; the server is percona-server-server)
+  copyright:
+    - license: GPL-2.0-only
+  # The main package ships no files: every installed file is moved into a subpackage below (-server is
+  # the catch-all and runs last). Installing "percona-server" pulls in the server and the client.
+  dependencies:
+    runtime:
+      - percona-server-server
+      - percona-server-client
+
+# Build flags follow Percona's DEB build (build-ps/debian/rules @ ps_tag, spec section 5, verbatim); file
+# placement follows the RPM layout of the official percona/percona-server image (build-ps/percona-server.spec.in).
+# Wolfi has merged /usr: /usr/sbin -> bin and /usr/lib64 -> lib are symlinks owned by wolfi-baselayout, so the
+# binaries are configured with the RPM paths (compiled-in defaults such as plugin_dir=/usr/lib64/mysql/plugin
+# match the official image) and the installed tree is then moved to /usr/bin and /usr/lib; every RPM path
+# still resolves at runtime through those symlinks.
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - linux-headers
+      - cmake
+      - ninja-build
+      - ccache
+      - bison
+      - perl
+      - pkgconf
+      - patch
+      - git
+      # system libraries (spec section 5: WITH_*=system)
+      - openssl-dev~3.6   # MySQL 9.7 supports OpenSSL 1.1/3.x; Wolfi openssl-dev is 4.0 (docs/deviations.md)
+      - zstd-dev
+      - zlib-dev
+      - lz4-dev
+      - openldap-dev
+      - cyrus-sasl-mit-dev
+      - krb5-dev
+      - linux-pam-dev
+      - numactl-dev
+      - libaio-dev
+      - libtirpc-dev
+      - rpcsvc-proto
+      - ncurses-dev
+      # bundled libfido2 (WITH_FIDO=bundled) needs libudev on Linux
+      - libudev-dev
+      # from the local repo (packages/mecab, packages/v8)
+      - mecab
+      - mecab-dev
+      - v8-dev
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/percona-server
+      tag: "@@ps_tag@@"
+      expected-commit: "@@ps_commit@@"
+      recurse-submodules: true
+      destination: ps-src
+
+  - name: Apply patches
+    runs: |
+      export LC_ALL=C
+      n=0
+      for p in patches/*.patch; do
+        [ -e "$p" ] || continue
+        echo "applying $p"
+        patch -d ps-src -p1 --forward --no-backup-if-mismatch < "$p"
+        n=$((n + 1))
+      done
+      echo "applied $n patch(es)"
+
+  - name: Limit concurrent LTO links
+    runs: |
+      # WITH_LTO links with -flto=$(nproc); unbounded parallel links exhaust RAM. MySQL's CMakeLists.txt
+      # overwrites the global JOB_POOLS property (so -DCMAKE_JOB_POOLS is lost); add a "link" pool there.
+      # Build-scheduling only, the output does not change.
+      f=ps-src/CMakeLists.txt
+      grep -q 'SET_PROPERTY(GLOBAL PROPERTY JOB_POOLS one_job=1)' "$f"
+      sed -i 's/SET_PROPERTY(GLOBAL PROPERTY JOB_POOLS one_job=1)/SET_PROPERTY(GLOBAL PROPERTY JOB_POOLS one_job=1 link=4)/' "$f"
+      grep -q 'JOB_POOLS one_job=1 link=4' "$f"
+
+  - name: Configure
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      top=$(pwd)
+      # Reproducibility (non-semantic): map the workspace path away; a launcher adds a per-object
+      # -frandom-seed=<output path> (GCC otherwise seeds from time/pid) and uses ccache when CCACHE_DIR is set.
+      cat > "$top/ps-cc-launcher" <<'SH'
+      #!/bin/sh
+      out= prev=
+      for a in "$@"; do
+        [ "$prev" = "-o" ] && out=$a
+        prev=$a
+      done
+      cc=$1
+      shift
+      if [ -n "$out" ]; then set -- "-frandom-seed=$out" "$@"; fi
+      if [ -n "${CCACHE_DIR:-}" ] && command -v ccache >/dev/null 2>&1; then exec ccache "$cc" "$@"; fi
+      exec "$cc" "$@"
+      SH
+      chmod +x "$top/ps-cc-launcher"
+      # DEB rules export exactly these as CFLAGS/CXXFLAGS, plus the shared hardening baseline (hardening_cflags /
+      # hardening_ldflags, ruling R7) and the path map. Melange's default flags are replaced, not extended.
+      export CFLAGS="@@hardening_cflags@@ -Wno-error=free-nonheap-object -Wno-error=implicit-function-declaration -ffile-prefix-map=$top=."
+      export CXXFLAGS="$CFLAGS"
+      export CPPFLAGS=""
+      # -ffile-prefix-map in LDFLAGS too: with LTO the link step generates the code and debug info (DW_AT_comp_dir),
+      # and without it the link records /home/build/ps-build (laptop build, leak scan).
+      export LDFLAGS="@@hardening_ldflags@@ -flto-partition=balanced -ffile-prefix-map=$top=."
+      # /usr/bin compilers, not Wolfi's /usr/local/bin openssf wrappers (build-base -> openssf-compiler-options): the
+      # wrappers add -specs openssf.spec (_GLIBCXX_ASSERTIONS, -fno-strict-aliasing, ... - not the R7 flag set) and
+      # break under ccache, which resolves the symlink and runs the wrapper as "gcc-wrapper".
+      cmake -S ps-src -B ps-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DBUILD_CONFIG=mysql_release -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DWITH_SYSTEM_LIBS=ON -DWITH_PACKAGE_FLAGS=OFF \
+        -DWITH_SSL=system -DWITH_ZSTD=system -DWITH_ZLIB=system -DWITH_LZ4=system \
+        -DWITH_CURL=bundled -DWITH_LDAP=system -DWITH_MECAB=system \
+        -DWITH_PROTOBUF=bundled -DWITH_RAPIDJSON=bundled -DWITH_ICU=bundled \
+        -DWITH_EDITLINE=bundled -DWITH_LIBEVENT=bundled -DWITH_FIDO=bundled \
+        -DWITH_ROCKSDB=ON -DROCKSDB_DISABLE_AVX2=1 -DROCKSDB_DISABLE_MARCH_NATIVE=1 \
+        -DWITH_PAM=ON -DWITH_ENCRYPTION_UDF=ON -DWITH_NUMA=ON \
+        -DWITH_PERCONA_TELEMETRY=ON -DWITH_COMPONENT_KEYRING_VAULT=ON \
+        -DWITH_AUTHENTICATION_CLIENT_PLUGINS=ON \
+        -DWITH_INNODB_MEMCACHED=ON -DWITH_ARCHIVE_STORAGE_ENGINE=ON \
+        -DWITH_BLACKHOLE_STORAGE_ENGINE=ON -DWITH_FEDERATED_STORAGE_ENGINE=ON \
+        -DWITH_EXTRA_CHARSETS=all \
+        -DWITH_JS_LANG=ON -DV8_INCLUDE_DIR=/usr/include/v8 -DV8_LIB_DIR=/usr/lib/v8 \
+        -DWITH_LTO=ON \
+        -DCOMPILATION_COMMENT="Percona Server (GPL), Release @@ps_release@@, Revision @@ps_revision@@" \
+        -DINSTALL_LAYOUT=RPM \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DSYSCONFDIR=/etc \
+        -DINSTALL_LIBDIR=lib64/mysql \
+        -DINSTALL_PLUGINDIR=lib64/mysql/plugin \
+        -DINSTALL_MYSQLSHAREDIR=share/percona-server \
+        -DINSTALL_SUPPORTFILESDIR=share/percona-server \
+        -DMYSQL_UNIX_ADDR=/var/lib/mysql/mysql.sock \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_JOB_POOL_LINK=link \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/ps-cc-launcher" \
+        -DCMAKE_CXX_COMPILER_LAUNCHER="$top/ps-cc-launcher" \
+        -DCMAKE_C_LINKER_LAUNCHER="$top/ps-cc-launcher" \
+        -DCMAKE_CXX_LINKER_LAUNCHER="$top/ps-cc-launcher"
+      # hardening baseline reached the cache: compile flags and every link type (LTO links use the same link
+      # lines). CXX/EXE/SHARED are required; C/MODULE are checked when the project defines them.
+      c=ps-build/CMakeCache.txt
+      grep -q '^CMAKE_CXX_FLAGS:STRING=.*-fstack-clash-protection' "$c"
+      grep -q '^CMAKE_EXE_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      grep -q '^CMAKE_SHARED_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      if grep -q '^CMAKE_C_FLAGS:' "$c"; then grep -q '^CMAKE_C_FLAGS:STRING=.*-fstack-clash-protection' "$c"; fi
+      if grep -q '^CMAKE_MODULE_LINKER_FLAGS:' "$c"; then grep -q '^CMAKE_MODULE_LINKER_FLAGS:STRING=.*-z,now' "$c"; fi
+      # OpenSSL ruling: OpenSSL 3 headers (openssl-dev~3.6), curl bundled (Wolfi curl-dev needs OpenSSL 4 headers)
+      grep -Eq 'define OPENSSL_VERSION_MAJOR +3$' /usr/include/openssl/opensslv.h
+      grep -q '^WITH_CURL:STRING=bundled$' "$c"
+      grep -q '^CMAKE_CXX_COMPILER:[A-Z]*=/usr/bin/g++$' "$c"
+
+  - name: Build
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      /usr/lib/ninja-build/bin/ninja -C ps-build -j"$(nproc)"
+      if command -v ccache >/dev/null 2>&1 && [ -n "${CCACHE_DIR:-}" ]; then ccache --show-stats || true; fi
+
+  - name: Install
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      DESTDIR="${{targets.destdir}}" cmake --install ps-build
+
+  - name: Wolfi layout and RPM-compatible extras
+    runs: |
+      d="${{targets.destdir}}"
+      # merged /usr: RPM paths are symlinks on Wolfi (wolfi-baselayout), so ship the real directories
+      for pair in usr/sbin:usr/bin usr/lib64:usr/lib; do
+        from=${pair%%:*} to=${pair#*:}
+        if [ -d "$d/$from" ]; then
+          mkdir -p "$d/$to"
+          cp -a "$d/$from/." "$d/$to/"
+          rm -rf "${d:?}/$from"
+        fi
+      done
+      # not shipped (same removals as the RPM spec %install), plus MySQL Router (out of scope) and the
+      # build-host dependent INFO_BIN/INFO_SRC (kernel version, build time)
+      rm -rf "$d/usr/share/info" \
+        "$d/usr/share/percona-server/mysql.server" "$d/usr/share/percona-server/mysqld_multi.server" \
+        "$d/usr/share/percona-server/win_install_firewall.sql" \
+        "$d/usr/share/percona-server/audit_log_filter_win_install.sql" \
+        "$d/usr/bin/mysql_embedded" "$d/usr/cmake" \
+        "$d/usr/include/kmip.h" "$d/usr/include/kmippp.h" "$d"/usr/lib/libkmip*.a \
+        "$d"/usr/bin/mysqlrouter* "$d/usr/lib/mysqlrouter" "$d/usr/share/mysqlrouter" "$d/etc/mysqlrouter" \
+        "$d"/usr/share/man/man1/mysqlrouter* "$d/var/lib/mysqlrouter" "$d/var/log/mysqlrouter" \
+        "$d/var/run/mysqlrouter" "$d/run/mysqlrouter"
+      find "$d" \( -name 'INFO_BIN*' -o -name 'INFO_SRC*' \) -exec rm -f {} +
+      find "$d/usr/share/mysql-test" -maxdepth 1 -name 'core*' -exec rm -f {} + 2>/dev/null || true
+      # /etc/my.cnf exactly as the RPM installs it; /etc/my.cnf.d for drop-ins (docker.cnf comes later)
+      install -Dm0644 ps-src/build-ps/rpm/mysqld.cnf "$d/etc/my.cnf"
+      install -d -m0755 "$d/etc/my.cnf.d"
+      # RPM %posttrans creates /usr/share/mysql -> percona-server
+      ln -s percona-server "$d/usr/share/mysql"
+      # The RPM ships libmysqlclient.so.24 (renamed by Percona's RPM packaging); upstream CMake builds
+      # libperconaserverclient. Keep the upstream name and add the RPM names as symlinks.
+      lib="$d/usr/lib/mysql"
+      so=$(cd "$lib" && ls libperconaserverclient.so.[0-9]* | sort | head -n1)
+      test -n "$so"
+      ln -s "$so" "$lib/libmysqlclient${so#libperconaserverclient}"
+      ln -s libperconaserverclient.so "$lib/libmysqlclient.so"
+      ln -s libperconaserverclient.a "$lib/libmysqlclient.a"
+      if [ -f "$d/usr/lib/pkgconfig/perconaserverclient.pc" ]; then
+        ln -s perconaserverclient.pc "$d/usr/lib/pkgconfig/mysqlclient.pc"
+      fi
+      # RPM: echo /usr/lib64/mysql > /etc/ld.so.conf.d/mysql-x86_64.conf. Written with the real (merged) path:
+      # melange's dependency scanner reads it to treat /usr/lib/mysql as a library dir (so:libperconaserverclient
+      # is then "provided" across subpackages). private/ is deliberately not listed (bundled libs stay private).
+      install -d "$d/etc/ld.so.conf.d"
+      echo /usr/lib/mysql > "$d/etc/ld.so.conf.d/mysql-x86_64.conf"
+      # Official RPM build bundles MeCab under /usr/lib64/mysql/mecab; we use the system mecab packages and
+      # point the RPM paths at them.
+      install -d "$lib/mecab/etc"
+      ln -s /etc/mecabrc "$lib/mecab/etc/mecabrc"
+      ln -s /usr/lib/mecab/dic "$lib/mecab/dic"
+      install -Dm0644 ps-src/LICENSE "$d/usr/share/licenses/percona-server/LICENSE"
+      install -Dm0644 ps-src/README.md "$d/usr/share/licenses/percona-server/README.md"
+
+  - name: Build-path leak scan
+    runs: |
+      # No installed file may embed the workspace path (build-path independence, spec section 9).
+      # build-path-allowlist (optional, next to this recipe) lists justified exceptions as path regexes;
+      # scripts/melange-build.sh stages the checker as build-tools/.
+      allow=
+      if [ -f build-path-allowlist ]; then allow=build-path-allowlist; fi
+      # LEAK_SCAN=warn (from `LEAK_SCAN=warn make ...`, via melange-build.sh --env-file): report only, do not fail
+      # /home/build/csu: Wolfi's glibc is built in /home/build too; its crt objects' debug info names that path in every
+      # linked binary (not from this build, constant across hosts, stripped into -dbg by split/debug).
+      LEAK_IGNORE="$(pwd)/csu" LEAK_SCAN="${LEAK_SCAN:-fatal}" bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)" $allow
+  # No `uses: strip` here: percona-server-dbg (first subpackage) runs split/debug over the whole tree, which
+  # moves the debug info out and strips every ELF object.
+
+subpackages:
+  # Order matters: subpackages run in this order against the main install tree. -dbg must be first (it
+  # sees every binary), -server must be last (it takes whatever is left).
+  - name: percona-server-dbg
+    description: Debug symbols for all percona-server binaries, plugins and libraries
+    pipeline:
+      - uses: split/debug
+    options:
+      no-depends: true
+
+  - name: percona-server-test
+    description: Percona Server test suite (mysql-test tree, mysqltest, test plugins) for MTR runs
+    # no-depends: mysqlxtest links the server's private protobuf (vendored in -server, invisible to
+    # melange's scanner across subpackages); the test suite only runs next to the server anyway.
+    options:
+      no-depends: true
+    dependencies:
+      runtime:
+        - percona-server-server
+        - percona-server-client
+        - percona-server-rocksdb
+        - percona-server-js
+        - percona-server-scripts
+        - perl
+        - bash
+        - procps
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          mvp usr/share/mysql-test
+          for b in mysql_client_test mysqltest mysqltest_safe_process mysqlxtest mysql_keyring_encryption_test \
+            mysql_test_event_tracking; do
+            mvp usr/bin/$b usr/share/man/man1/$b.1 usr/share/man/man1/$b.1.gz
+          done
+          # test plugins: the list of the RPM percona-server-test %files @ ps_tag
+          while read -r p; do
+            if [ -n "$p" ]; then mvp "usr/lib/mysql/plugin/$p"; fi
+          done <<'LIST'
+          auth.so
+          auth_test_plugin.so
+          component_example_component1.so
+          component_example_component2.so
+          component_example_component3.so
+          component_log_sink_test.so
+          component_test_backup_lock_service.so
+          component_test_string_service_charset.so
+          component_test_string_service_long.so
+          component_test_string_service.so
+          component_pfs_example.so
+          component_pfs_example_component_population.so
+          pfs_example_plugin_employee.so
+          component_test_pfs_notification.so
+          component_test_pfs_resource_group.so
+          component_test_udf_registration.so
+          component_test_mysql_current_thread_reader.so
+          component_udf_reg_3_func.so
+          component_udf_reg_avg_func.so
+          component_udf_reg_int_func.so
+          component_udf_reg_int_same_func.so
+          component_udf_reg_only_3_func.so
+          component_udf_reg_real_func.so
+          component_udf_unreg_3_func.so
+          component_udf_unreg_int_func.so
+          component_udf_unreg_real_func.so
+          component_test_sys_var_service_int.so
+          component_test_sys_var_service.so
+          component_test_sys_var_service_same.so
+          component_test_sys_var_service_str.so
+          component_test_status_var_service.so
+          component_test_status_var_service_int.so
+          component_test_status_var_service_reg_only.so
+          component_test_status_var_service_str.so
+          component_test_status_var_service_unreg_only.so
+          component_test_system_variable_source.so
+          component_test_telemetry_resource_provider.so
+          component_test_telemetry_secret_provider.so
+          daemon_example.ini
+          libdaemon_example.so
+          replication_observers_example_plugin.so
+          libtest_framework.so
+          libtest_services.so
+          libtest_services_threaded.so
+          libtest_session_detach.so
+          libtest_session_attach.so
+          libtest_session_in_thd.so
+          libtest_session_info.so
+          libtest_sql_2_sessions.so
+          libtest_sql_all_col_types.so
+          libtest_sql_cmds_1.so
+          libtest_sql_commit.so
+          libtest_sql_complex.so
+          libtest_sql_errors.so
+          libtest_sql_lock.so
+          libtest_sql_processlist.so
+          libtest_sql_replication.so
+          libtest_sql_shutdown.so
+          libtest_sql_sleep_is_connected.so
+          libtest_sql_stmt.so
+          libtest_sql_sqlmode.so
+          libtest_sql_stored_procedures_functions.so
+          libtest_sql_views_triggers.so
+          libtest_x_sessions_deinit.so
+          libtest_x_sessions_init.so
+          qa_auth_client.so
+          qa_auth_interface.so
+          qa_auth_server.so
+          test_security_context.so
+          test_services_plugin_registry.so
+          test_udf_services.so
+          udf_example.so
+          component_mysqlx_global_reset.so
+          component_test_mysql_runtime_error.so
+          libtest_sql_reset_connection.so
+          component_test_sensitive_system_variables.so
+          conflicting_variables.so
+          component_test_mysql_command_services.so
+          component_test_status_var_reader.so
+          test_services_command_services.so
+          component_test_event_tracking_consumer.so
+          component_test_event_tracking_producer_a.so
+          component_test_event_tracking_producer_b.so
+          component_test_event_tracking_consumer_a.so
+          component_test_event_tracking_consumer_b.so
+          component_test_event_tracking_consumer_c.so
+          LIST
+          test -d "$s/usr/share/mysql-test"
+          test -x "$s/usr/bin/mysqltest"
+
+  - name: percona-server-rocksdb
+    description: MyRocks (RocksDB) storage engine plugin for Percona Server
+    dependencies:
+      runtime:
+        - percona-server-server
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/usr/bin" "$s/usr/lib/mysql/plugin"
+          mv "$d/usr/lib/mysql/plugin/ha_rocksdb.so" "$s/usr/lib/mysql/plugin/"
+          for b in ldb sst_dump; do
+            if [ -e "$d/usr/bin/$b" ]; then mv "$d/usr/bin/$b" "$s/usr/bin/"; fi
+          done
+
+  - name: percona-server-js
+    description: JavaScript stored programs component (component_js_lang, statically linked V8)
+    dependencies:
+      runtime:
+        - percona-server-server
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/usr/lib/mysql/plugin" "$s/usr/share/licenses/percona-server-js"
+          mv "$d/usr/lib/mysql/plugin/component_js_lang.so" "$s/usr/lib/mysql/plugin/"
+          # components/js_lang has no licence file of its own (GPL-2.0, the server's LICENSE); it links V8 statically
+          # (BSD-3-Clause), so V8's licence (from v8-dev in the build environment) ships with it too.
+          cp ps-src/LICENSE "$s/usr/share/licenses/percona-server-js/LICENSE"
+          cp /usr/share/licenses/v8-dev/LICENSE "$s/usr/share/licenses/percona-server-js/LICENSE.v8"
+
+  - name: percona-server-icu-data-files
+    description: ICU data files used by the Percona Server regular expression library
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/usr/lib/mysql/private"
+          n=0
+          for f in "$d"/usr/lib/mysql/private/icudt*; do
+            [ -e "$f" ] || continue
+            mv "$f" "$s/usr/lib/mysql/private/"
+            n=$((n + 1))
+          done
+          test "$n" -gt 0
+
+  - name: percona-server-dev
+    description: Percona Server development files (headers, mysql_config, static client library, pkg-config)
+    dependencies:
+      runtime:
+        - percona-server-libs
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          mvp usr/include usr/lib/pkgconfig usr/share/aclocal usr/lib/libcoredumper.a \
+            usr/bin/mysql_config usr/share/man/man1/mysql_config.1 usr/share/man/man1/mysql_config.1.gz \
+            usr/lib/mysql/libperconaserverclient.so usr/lib/mysql/libmysqlclient.so
+          for f in "$d"/usr/lib/mysql/*.a; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            mvp "usr/lib/mysql/${f##*/}"
+          done
+          test -f "$s/usr/include/mysql/mysql.h"
+          test -x "$s/usr/bin/mysql_config"
+
+  - name: percona-server-libs
+    description: Percona Server client library (libperconaserverclient, RPM name libmysqlclient) and client-side auth plugins
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          for f in "$d"/usr/lib/mysql/libperconaserverclient.so.* "$d"/usr/lib/mysql/libmysqlclient.so.* \
+            "$d"/usr/lib/mysql/private/libfido2.so*; do
+            mvp "${f#"$d"/}"
+          done
+          mvp etc/ld.so.conf.d/mysql-x86_64.conf
+          # RPM percona-server-client-plugins (minus auth_openid_connect.so, a server plugin kept in -server)
+          for p in authentication_ldap_sasl_client.so authentication_kerberos_client.so mysql_native_password.so \
+            authentication_openid_connect_client.so authentication_oci_client.so dialog.so \
+            authentication_webauthn_client.so; do
+            mvp "usr/lib/mysql/plugin/$p"
+          done
+          ls "$s"/usr/lib/mysql/libperconaserverclient.so.*
+          test -f "$s/usr/lib/mysql/plugin/dialog.so"
+
+  - name: percona-server-client
+    description: Percona Server command line clients (mysql, mysqldump, mysqladmin, ...)
+    dependencies:
+      runtime:
+        - percona-server-libs
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          for b in mysql mysqladmin mysqlbinlog mysqlcheck mysqldump mysqlimport mysqlshow mysqlslap \
+            mysql_config_editor mysql_migrate_keyring; do
+            for f in "usr/bin/$b" "usr/share/man/man1/$b.1" "usr/share/man/man1/$b.1.gz"; do
+              [ -e "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          done
+          test -x "$s/usr/bin/mysql"
+          test -x "$s/usr/bin/mysqldump"
+
+  # Every shipped file with a `#!` interpreter line (mysqld_safe, mysqld_multi, mysqldumpslow, ps-admin, ...): melange
+  # generates a cmd:<interpreter> dependency for each, which would pull busybox/bash/perl into the distroless image.
+  # Same paths as the RPM (there these files are in percona-server-server, see docs/deviations.md); installed only in
+  # the -dev image (ps-admin: INIT_ROCKSDB in the entrypoint). packages/percona-server/no-cmd-deps lists the
+  # subpackages that must stay free of cmd: dependencies (checked by scripts/melange-build.sh after the build).
+  # Runs after -dev (mysql_config) and before the -server catch-all.
+  - name: percona-server-scripts
+    description: Percona Server helper scripts (mysqld_safe, mysqld_multi, mysqldumpslow, ps-admin; need sh/bash/perl)
+    dependencies:
+      runtime:
+        - percona-server-server
+        - percona-server-client
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          # NUL bytes are dropped so binary files compare quietly
+          (cd "$d" && find . -type f ! -path './usr/share/licenses/*' | sed 's#^\./##' | LC_ALL=C sort) |
+            while read -r f; do
+              [ -f "$d/$f" ] || continue   # a man page moved with its script
+              [ "$(head -c 2 "$d/$f" | tr -d '\000')" = '#!' ] || continue
+              echo "SCRIPT (moved into percona-server-scripts): $f: $(head -n1 "$d/$f")"
+              mvp "$f"
+              case $f in
+                usr/bin/*) b=${f#usr/bin/}; mvp "usr/share/man/man1/$b.1" "usr/share/man/man1/$b.1.gz" ;;
+              esac
+            done
+          test -x "$s/usr/bin/ps-admin"
+
+  - name: percona-server-server
+    description: Percona Server for MySQL server (mysqld, plugins, components, share files, my.cnf)
+    dependencies:
+      runtime:
+        - percona-server-libs
+        - percona-server-icu-data-files
+        - mecab-ipadic
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          test -x "$d/usr/bin/mysqld"
+          # Catch-all: everything still in the main tree belongs to the server. Paths outside the expected
+          # set are moved too (the build does not fail) but are listed for review in the build log.
+          expected='^(usr/bin|usr/lib/mysql|usr/share/percona-server|usr/share/mysql|usr/share/man|usr/share/doc|usr/share/licenses|etc/my\.cnf|etc/my\.cnf\.d)(/|$)'
+          (cd "$d" && find . -mindepth 1 \( -type f -o -type l \) | sed 's#^\./##' | LC_ALL=C sort) |
+            grep -Ev "$expected" | sed 's/^/UNEXPECTED-PATH (moved into percona-server-server): /' || true
+          mkdir -p "$s"
+          for f in "$d"/* "$d"/.[!.]*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            mv "$f" "$s/"
+          done
+          test -z "$(ls -A "$d")"
+          # RPM: %dir %attr(750, mysql, mysql) /var/lib/mysql-files - the compiled-in --secure-file-priv; mysqld
+          # aborts when it is missing. Root-owned here (no mysql user at install time); images own it via apko paths.
+          install -d -m 0750 "$s/var/lib/mysql-files"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - perl
+        - procps
+        - percona-server-server
+        - percona-server-client
+        - percona-server-rocksdb
+        - percona-server-js
+        - percona-server-scripts
+        - percona-server-test
+        - mecab-ipadic
+        # readelf for the hardening step
+        - binutils
+  pipeline:
+    - name: smoke test (tests/smoke.sh)
+      runs: |
+        # tests/smoke.sh reaches the test workspace through the staged --source-dir (scripts/melange-build.sh)
+        test -f tests/smoke.sh || { echo "tests/smoke.sh missing from the test workspace (staged source dir)" >&2; exit 1; }
+        PS_VERSION="@@ps_version@@-@@ps_release@@" bash tests/smoke.sh
+    - name: hardening (RELRO, BIND_NOW, stack protector)
+      runs: |
+        # ruling R7 baseline: full RELRO (-z relro -z now) and -fstack-protector-strong in shipped binaries
+        for f in /usr/bin/mysqld /usr/bin/mysql; do
+          readelf -lW "$f" | grep -q GNU_RELRO || { echo "$f: no GNU_RELRO segment" >&2; exit 1; }
+          readelf -dW "$f" | grep -Eq '\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' || { echo "$f: neither DT_FLAGS BIND_NOW nor DT_FLAGS_1 NOW" >&2; exit 1; }
+          readelf --dyn-syms -W "$f" | grep __stack_chk_fail >/dev/null || { echo "$f: no __stack_chk_fail import" >&2; exit 1; }
+          echo "ok: $f (RELRO, BIND_NOW, stack protector)"
+        done
+
+update:
+  enabled: false

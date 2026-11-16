@@ -1,0 +1,93 @@
+package:
+  name: mecab
+  version: "@@mecab_version@@"
+  epoch: 0
+  description: MeCab Japanese morphological analyzer (full-text parser for the Percona Server mecab plugin)
+  copyright:
+    - license: BSD-3-Clause OR LGPL-2.1-or-later OR GPL-2.0-or-later
+  # mecab owns /etc/mecabrc; mecab-ipadic provides the dictionary it points at.
+  dependencies:
+    runtime: []
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      # gconv modules: without them configure reports "working iconv... no" and mecab is built
+      # without charset conversion (dictionaries then silently come out unusable)
+      - glibc-iconv
+
+pipeline:
+  - uses: fetch
+    with:
+      uri: @@mecab_url@@
+      expected-sha256: @@mecab_sha256@@
+      strip-components: 1
+  - name: Configure
+    runs: |
+      # 0.996 predates modern C++ (dynamic exception specs, register); build as gnu++14.
+      export CXXFLAGS="-O2 -std=gnu++14 -Wno-register -fpermissive"
+      ./configure \
+        --prefix=/usr \
+        --libdir=/usr/lib \
+        --sysconfdir=/etc \
+        --localstatedir=/var \
+        --disable-static
+  - runs: make -j"$(nproc)"
+  - uses: autoconf/make-install
+  - name: Write /etc/mecabrc
+    runs: |
+      mkdir -p "${{targets.destdir}}/etc"
+      printf 'dicdir = /usr/lib/mecab/dic/ipadic\n' > "${{targets.destdir}}/etc/mecabrc"
+      mkdir -p "${{targets.destdir}}/usr/lib/mecab/dic"
+  - uses: strip
+
+subpackages:
+  - name: mecab-dev
+    description: mecab development files (headers, mecab-config, .so symlink)
+    pipeline:
+      - uses: split/dev
+    dependencies:
+      runtime:
+        - mecab
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+      pipeline:
+        - name: mecab-config works
+          runs: |
+            mecab-config --version | grep -x "@@mecab_version@@"
+            test -f /usr/include/mecab.h
+            test -L /usr/lib/libmecab.so
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+  pipeline:
+    - name: binaries and rc file
+      runs: |
+        mecab --version | grep "@@mecab_version@@"
+        test -x /usr/libexec/mecab/mecab-dict-index
+        test -x /usr/libexec/mecab/mecab-dict-gen
+        grep -x 'dicdir = /usr/lib/mecab/dic/ipadic' /etc/mecabrc
+
+update:
+  enabled: false

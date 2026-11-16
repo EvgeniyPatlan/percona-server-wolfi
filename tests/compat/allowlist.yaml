@@ -1,0 +1,107 @@
+# Compatibility allowlist for tests/compat/compare.sh (official percona/percona-server vs our image).
+# The official image wins: every runtime difference is a bug unless the OWNER approves an entry here.
+# Names: exact or glob, but must contain a literal character (a bare * is rejected); for kind file a glob never crosses "/".
+# Entries that never match are reported as stale warnings. Trailing "# comments" after values are allowed.
+# Entry: kind (variable|plugin|component|file|env|config), name (exact or glob), reason (mandatory).
+# Per-run / host-specific values first, then the deliberate deviations (docs/deviations.md) the owner approved on
+# 2026-11-16 after the first laptop diff. Candidates that did not show up in that diff stay commented at the end.
+entries:
+  # --- per-run / per-build values ---
+  - kind: variable
+    name: hostname
+    reason: "container hostname is the random container id"
+  - kind: variable
+    name: server_uuid
+    reason: "generated at first start of every datadir"
+  - kind: variable
+    name: general_log_file
+    reason: "default is <datadir>/<hostname>.log; the hostname is the random container id"
+  - kind: variable
+    name: slow_query_log_file
+    reason: "default is <datadir>/<hostname>-slow.log; the hostname is the random container id"
+  - kind: variable
+    name: relay_log*
+    reason: "relay_log, relay_log_basename, relay_log_index default to <hostname>-relay-bin; random container id"
+  - kind: variable
+    name: build_id
+    reason: "GNU build-id of the mysqld binary: differs for every distinct build"
+
+  # --- version skew (R5): the official image is 9.7.2-3.1, the Wolfi build tags 9.7.2-2. Remove with the pin bump. ---
+  - kind: variable
+    name: version
+    reason: "R5 version skew: Wolfi build is 9.7.2-2, official image 9.7.2-3.1"
+  - kind: variable
+    name: innodb_version
+    reason: "R5 version skew, follows the server version"
+  - kind: variable
+    name: version_comment
+    reason: "R5: COMPILATION_COMMENT carries the release and source revision, which differ with the version skew"
+  - kind: env
+    name: PS_VERSION
+    reason: "R5 version skew (9.7.2-2 vs 9.7.2-3.1)"
+  - kind: env
+    name: FULL_PERCONA_VERSION
+    reason: "R5 version skew, and the OS suffix el9 -> wolfi"
+  - kind: env
+    name: PS_TELEMETRY_VERSION
+    reason: "R5 version skew"
+
+  # --- OS and packaging (deviations.md: Image ENV values) ---
+  - kind: env
+    name: OS_VER
+    reason: "Wolfi, not el9 (deviations.md: Image ENV values)"
+  - kind: env
+    name: FULL_MYSQL_SHELL_VERSION
+    reason: "OS suffix el9 -> wolfi (deviations.md: Image ENV values)"
+  - kind: env
+    name: CALL_HOME_OPTIONAL_PARAMS
+    reason: "' -s wolfi' instead of ' -s el9' so telemetry reports the real OS (deviations.md: Image ENV values)"
+  - kind: env
+    name: PS_REPO
+    reason: "no rpm repo in a Wolfi image (deviations.md: Image ENV values)"
+  - kind: env
+    name: KEY_RPM*
+    reason: "no rpm repo in a Wolfi image (deviations.md: Image ENV values); official: KEY_RPM_DOWNLOAD_SHA256"
+  - kind: env
+    name: SSL_CERT_FILE
+    reason: "apko sets it for the Wolfi CA bundle (deviations.md: Image ENV values)"
+  - kind: variable
+    name: version_compile_zlib
+    reason: "system zlib (Wolfi zlib 1.3.2.1-motley) instead of the rpm's 1.3.2 (deviations.md: PS system libraries)"
+
+  # --- image config (apko) ---
+  - kind: config
+    name: ExposedPorts
+    reason: "apko cannot set EXPOSE; publish 3306/33060 explicitly (deviations.md: Image VOLUME / EXPOSE)"
+  - kind: config
+    name: Volumes
+    reason: "apko cannot set VOLUME; /var/lib/mysql and /var/log/mysql are created writable instead"
+  - kind: config
+    name: User
+    reason: "apko run-as is numeric (1001) where the official image says mysql; same uid (deviations.md: Image user)"
+
+  # --- files ---
+  - kind: file
+    name: debug/*
+    reason: "no debug build of the plugins (plugin/debug; deviations.md: PS debug build)"
+  - kind: file
+    name: component_js_lang.so
+    reason: "percona-server-js installed in both server images (deviations.md: PS JS component packaging)"
+
+# ---------------------------------------------------------------------------------------------------------------
+# Documented candidates that did not differ in the 2026-11-16 diff (approved in principle; uncomment if one shows up):
+#  - kind: variable
+#    name: report_host
+#    reason: "set from the container hostname when the server registers with a replica source"
+#  - kind: env
+#    name: MYSQL_SHELL_VERSION
+#    reason: "shell build tag differs from the rpm version-release (deviations.md: Image ENV values)"
+#  - kind: env
+#    name: PATH
+#    reason: "Wolfi base PATH (deviations.md: Image user / layout)"
+#  - kind: env
+#    name: LD_PRELOAD
+#    reason: "R8: jemalloc not preloaded"
+#  - kind: variable
+#    name: validate_password*
+#    reason: "validate_password dictionary: cracklib-dicts not shipped"

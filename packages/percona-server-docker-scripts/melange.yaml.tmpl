@@ -1,0 +1,168 @@
+package:
+  name: percona-server-docker-scripts
+  version: "@@ps_version@@.@@ps_release@@"
+  epoch: 0
+  description: Entrypoint and docker glue of the official percona/percona-server 9.x image (percona-docker at a pinned commit, Wolfi-patched)
+  copyright:
+    - license: GPL-2.0-only
+  dependencies:
+    runtime:
+      - bash
+      - busybox
+      - jemalloc
+      - percona-server-docker-config=${{package.full-version}}
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+      - patch
+
+pipeline:
+  # The RPM's /etc/my.cnf (build-ps/rpm/mysqld.cnf at ps_commit), the file the official image starts from
+  - uses: fetch
+    with:
+      uri: @@ps_mycnf_url@@
+      expected-sha256: @@ps_mycnf_sha256@@
+      extract: false
+
+  # percona-docker has no release tags; fetch the pinned commit by hash and verify it
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # Wolfi-only tweaks (jemalloc path, pwmake); each patch header says why. See docs/deviations.md.
+  - name: Apply Wolfi patches to ps-entry.sh
+    runs: |
+      set -eu
+      export LC_ALL=C
+      cp pd-src/percona-server-9.x/ps-entry.sh ps-entry.sh
+      for p in patches/*.patch; do
+        echo "applying $p"
+        patch -d . -p1 --forward < "$p"
+      done
+
+  # Ownership mirrors the Dockerfile (mysql = uid/gid 1001); see the telemetry agent recipe for the mechanism.
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      install -Dm0775 ps-entry.sh "$d/docker-entrypoint.sh"
+      # dockerdir/ is copied to / by the official Dockerfile. Its usr/sbin and usr/lib64 are symlinks to
+      # usr/bin and usr/lib on Wolfi, so the files go to their real directories. mysqld looks for mysqld.my
+      # next to the real executable (/usr/bin/mysqld) and for component_*.cnf in the real plugin directory.
+      src=pd-src/percona-server-9.x/dockerdir
+      (cd "$src" && find . -type f) | while read -r f; do
+        f=${f#./}
+        case $f in
+          usr/sbin/*) t=usr/bin/${f#usr/sbin/} ;;
+          usr/lib64/*) t=usr/lib/${f#usr/lib64/} ;;
+          *) t=$f ;;
+        esac
+        install -Dm0644 "$src/$f" "$d/$t"
+      done
+      # /etc/my.cnf + /etc/my.cnf.d go to the percona-server-docker-config subpackage (both images use it).
+      # Dockerfile: `find /etc/my.cnf /etc/my.cnf.d -name '*.cnf' | xargs grep -lE '^(bind-address|log|user)' |
+      # xargs sed -Ei 's/^(bind-address|log|user)/#&/'` (here only my.cnf exists yet; sed on a file without a
+      # match is a no-op), then `echo '!includedir /etc/my.cnf.d' >> /etc/my.cnf`.
+      install -Dm0664 mysqld.cnf "$d/etc/my.cnf"
+      sed -Ei 's/^(bind-address|log|user)/#&/' "$d/etc/my.cnf"
+      echo '!includedir /etc/my.cnf.d' >> "$d/etc/my.cnf"
+      if grep -E '^(bind-address|log|user)' "$d/etc/my.cnf"; then exit 1; fi
+      grep -qx '#log-error=/var/log/mysqld.log' "$d/etc/my.cnf"
+      # Dockerfile: don't reverse-lookup hostnames (clients are other containers)
+      install -d -m0775 "$d/etc/my.cnf.d"
+      printf '[mysqld]\nhost_cache_size=0\nskip-name-resolve\n' > "$d/etc/my.cnf.d/docker.cnf"
+      # Dockerfile: chown -R mysql:root /etc/my.cnf /etc/my.cnf.d; chmod -R ug+rwX (files 0664, dirs 0775)
+      chmod 0664 "$d/etc/my.cnf.d/docker.cnf"
+      chown 1001:0 "$d/etc/my.cnf" "$d/etc/my.cnf.d"
+      # Dockerfile "TokuDB modifications": LD_PRELOAD (Wolfi jemalloc has only .so.2, in /usr/lib) and THP
+      install -d "$d/etc/sysconfig"
+      printf 'LD_PRELOAD=/usr/lib/libjemalloc.so.2\nTHP_SETTING=never\n' > "$d/etc/sysconfig/mysql"
+      chmod 0664 "$d/etc/sysconfig/mysql"
+      # Dockerfile: install -m 0775 -o mysql -g root -d /docker-entrypoint-initdb.d
+      install -d -m0775 "$d/docker-entrypoint-initdb.d"
+      chown 1001:0 "$d/etc/my.cnf.d/docker.cnf" "$d/etc/sysconfig/mysql" "$d/docker-entrypoint-initdb.d"
+      install -Dm0644 pd-src/percona-server-9.x/LICENSE "$d/licenses/LICENSE.Dockerfile"
+      # `melange test` installs without applying owners, so ownership is asserted here, on the tree that becomes the apk
+      for f in etc/my.cnf etc/my.cnf.d etc/my.cnf.d/docker.cnf etc/sysconfig/mysql docker-entrypoint-initdb.d; do
+        test "$(stat -c '%u:%g' "$d/$f")" = 1001:0
+      done
+      test "$(stat -c '%a' "$d/etc/my.cnf")" = 664
+      test "$(stat -c '%a' "$d/etc/my.cnf.d")" = 775
+
+subpackages:
+  # Used by both percona-server images (the distroless one has no entrypoint script). /etc/my.cnf is also in
+  # percona-server-server (the RPM file, unedited, so the package stays RPM-identical); `replaces` lets this
+  # edited copy win in the image (apko and apk both honour it, in either install order).
+  - name: percona-server-docker-config
+    description: /etc/my.cnf and /etc/my.cnf.d/docker.cnf as in the official percona/percona-server 9.x image
+    dependencies:
+      replaces:
+        - percona-server-server
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/etc"
+          mv "$d/etc/my.cnf" "$d/etc/my.cnf.d" "$s/etc/"
+          test "$(stat -c '%u:%g %a' "$s/etc/my.cnf.d")" = "1001:0 775"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - jemalloc
+        - percona-server-docker-scripts
+  pipeline:
+    - name: entrypoint
+      runs: |
+        bash -n /docker-entrypoint.sh
+        test -x /docker-entrypoint.sh
+        head -n1 /docker-entrypoint.sh | grep -x '#!/bin/bash'
+        # Wolfi patches applied, no EL-only leftovers
+        # (`! cmd` never trips `set -e`, so failures are explicit)
+        if grep -E 'pwmake|libjemalloc\.so\.1' /docker-entrypoint.sh; then exit 1; fi
+        grep -q 'libjemalloc.so.2' /docker-entrypoint.sh
+        grep -q 'telemetry-agent-supervisor.sh' /docker-entrypoint.sh
+    - name: config files
+      runs: |
+        # my.cnf: the RPM file with the official Dockerfile's edits
+        grep -qx 'datadir=/var/lib/mysql' /etc/my.cnf
+        grep -qx '#log-error=/var/log/mysqld.log' /etc/my.cnf
+        if grep -E '^(bind-address|log|user)' /etc/my.cnf; then exit 1; fi
+        test "$(tail -n1 /etc/my.cnf)" = '!includedir /etc/my.cnf.d'
+        grep -q 'host_cache_size=0' /etc/my.cnf.d/docker.cnf
+        grep -q 'skip-name-resolve' /etc/my.cnf.d/docker.cnf
+        grep -x 'THP_SETTING=never' /etc/sysconfig/mysql
+        pre=$(sed -n 's/^LD_PRELOAD=//p' /etc/sysconfig/mysql)
+        test -n "$pre"
+        test -e "$pre"
+        grep -q read_local_manifest /usr/bin/mysqld.my
+        grep -q read_local_config /usr/lib/mysql/plugin/component_keyring_vault.cnf
+        test -d /docker-entrypoint-initdb.d
+    - name: random password snippet
+      runs: |
+        p=$(od -An -N24 -tx1 /dev/urandom | tr -d " \n")
+        test "${#p}" = 48
+
+update:
+  enabled: false

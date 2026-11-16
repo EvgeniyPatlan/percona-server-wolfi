@@ -1,0 +1,94 @@
+# percona-server:@@ps_version@@-@@ps_release@@ - distroless: no shell, no apk, no entrypoint script, no telemetry agent,
+# no MySQL Shell (spec section 7). The entrypoint is mysqld itself; datadir initialisation is the caller's job
+# (e.g. `mysqld --initialize-insecure` from an init container using the -dev image). No percona-server-scripts
+# (mysqld_safe, ps-admin, ...: they need sh/bash/perl). Built by
+# scripts/apko-build.sh, which also fails the build if the lock file contains a shell or apk-tools.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    - tzdata
+    # present for parity with the official image (/usr/lib/libjemalloc.so.2), not preloaded: the official image
+    # does not preload it by default either (ruling R8). The library only: Wolfi's `jemalloc` adds jeprof (cmd:perl).
+    - libjemalloc2
+    - percona-server-server
+    - percona-server-client
+    - percona-server-rocksdb
+    - percona-server-icu-data-files
+    # JavaScript stored programs (spec goal 2)
+    - percona-server-js
+    # the edited /etc/my.cnf (no log-error file, !includedir /etc/my.cnf.d) + docker.cnf, as in the -dev image
+    - percona-server-docker-config
+
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Same writable directories and ownership as the -dev image (/var/run -> /run in wolfi-baselayout).
+paths:
+  - path: /var/lib/mysql
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  # RPM: %attr(750, mysql, mysql); the compiled-in --secure-file-priv
+  - path: /var/lib/mysql-files
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o750
+  - path: /run/mysqld
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /var/log/mysql
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /etc/my.cnf
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o664
+  - path: /etc/my.cnf.d
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /etc/my.cnf.d/docker.cnf
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o664
+
+entrypoint:
+  command: /usr/sbin/mysqld
+work-dir: /
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  PS_VERSION: "@@ps_version@@-@@ps_release@@"
+
+annotations:
+  org.opencontainers.image.title: percona-server
+  org.opencontainers.image.description: Percona Server for MySQL @@ps_version@@-@@ps_release@@ built from source on Wolfi, distroless (entrypoint mysqld, no shell). Not an official Percona image.
+  org.opencontainers.image.version: "@@ps_version@@-@@ps_release@@"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64

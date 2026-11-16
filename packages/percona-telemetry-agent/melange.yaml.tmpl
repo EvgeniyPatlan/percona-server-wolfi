@@ -1,0 +1,149 @@
+package:
+  name: percona-telemetry-agent
+  version: "@@telemetry_agent_version@@"
+  epoch: 0
+  description: Percona telemetry agent @@telemetry_agent_version@@ with the docker supervisor and call-home.sh (phase-0 telemetry)
+  copyright:
+    - license: GPL-3.0-or-later
+  # /var/log/percona is world-writable exactly as in the official image (Dockerfile: chmod -R go+w), so
+  # the supervisor can log under any uid the container is started with.
+  checks:
+    disabled:
+      - worldwrite
+  dependencies:
+    runtime:
+      - bash
+      - busybox
+      - curl
+      - ca-certificates-bundle
+
+# Mirrors what the official percona/percona-server image carries from the `percona-telemetry-agent` rpm
+# (agent binary, /etc/sysconfig env file, /var/log/percona) plus the Dockerfile's own additions
+# (/call-home.sh, telemetry-agent-supervisor.sh, /usr/local/percona/telemetry/history).
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - git
+      # go.mod says `go 1.27.3`; GOTOOLCHAIN=local below keeps the toolchain from being downloaded
+      - go-1.27
+
+pipeline:
+  # call-home.sh, exactly as the official Dockerfile fetches it (same sha256)
+  - uses: fetch
+    with:
+      uri: @@call_home_url@@
+      expected-sha256: @@call_home_sha256@@
+      strip-components: 1
+
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/telemetry-agent
+      tag: "v@@telemetry_agent_version@@"
+      expected-commit: "@@telemetry_agent_commit@@"
+      destination: agent-src
+
+  # percona-docker has no release tags; fetch the pinned commit by hash and verify it
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # Reproducibility: -trimpath, -buildvcs=false (no VCS stamping), CGO off (static, as upstream's Makefile),
+  # default GOAMD64 (upstream's), build date from SOURCE_DATE_EPOCH instead of `date`. Upstream's `-a` is
+  # dropped (forces a rebuild of the standard library, no effect on the result). -s -w strips symbol tables.
+  # melange's go/build pipeline is not used: it forces GOAMD64=v2 and cgo, neither of which upstream does.
+  - name: Build percona-telemetry-agent
+    runs: |
+      set -eu
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      export CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
+      export GOMODCACHE=/var/cache/melange/gomodcache
+      cd agent-src
+      build_date=$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
+      mod=github.com/percona/telemetry-agent/config
+      go build -trimpath -buildvcs=false \
+        -ldflags "-s -w -X $mod.Version=v@@telemetry_agent_version@@ -X $mod.BuildDate=$build_date -X $mod.Commit=@@telemetry_agent_commit@@" \
+        -o ../percona-telemetry-agent ./cmd/telemetry-agent
+
+  # Ownership: the official image runs as mysql (uid/gid 1001) and chowns these to it. The files are
+  # chowned to the numeric ids here; the test: section checks they survive into the apk. apko installs
+  # them as recorded (a numeric id needs no account).
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      install -Dm0755 percona-telemetry-agent "$d/usr/bin/percona-telemetry-agent"
+      install -Dm0775 pd-src/percona-server-9.x/telemetry-agent-supervisor.sh "$d/usr/bin/telemetry-agent-supervisor.sh"
+      install -Dm0755 call-home.sh "$d/call-home.sh"
+      # rpm: env file with the agent defaults (the image also sets these as ENV)
+      install -Dm0640 agent-src/packaging/conf/percona-telemetry-agent.env "$d/etc/sysconfig/percona-telemetry-agent"
+      install -d -m0755 "$d/usr/local/percona/telemetry/history"
+      # rpm creates /var/log/percona/telemetry-agent (0775) with two 0660 logs; the Dockerfile does `chmod -R go+w /var/log/percona`
+      install -d -m0777 "$d/var/log/percona" "$d/var/log/percona/telemetry-agent"
+      install -m0666 /dev/null "$d/var/log/percona/telemetry-agent/telemetry-agent.log"
+      install -m0666 /dev/null "$d/var/log/percona/telemetry-agent/telemetry-agent-error.log"
+      chown 1001:1001 "$d/usr/local/percona" "$d/usr/local/percona/telemetry" "$d/usr/local/percona/telemetry/history"
+      chown 1001:0 "$d/usr/bin/percona-telemetry-agent" "$d/usr/bin/telemetry-agent-supervisor.sh"
+      install -Dm0644 agent-src/LICENSE "$d/usr/share/licenses/percona-telemetry-agent/LICENSE"
+
+  - name: Check ownership
+    runs: |
+      # `melange test` installs without applying owners, so they are asserted here, on the tree that
+      # becomes the apk (the apk tar headers were also checked by hand: numeric 1001 is preserved).
+      d="${{targets.destdir}}"
+      for f in usr/local/percona usr/local/percona/telemetry usr/local/percona/telemetry/history; do
+        test "$(stat -c '%u:%g' "$d/$f")" = 1001:1001
+      done
+      for f in usr/bin/percona-telemetry-agent usr/bin/telemetry-agent-supervisor.sh; do
+        test "$(stat -c '%u:%g' "$d/$f")" = 1001:0
+      done
+
+  - name: Build-path leak scan
+    runs: |
+      bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - percona-telemetry-agent
+  pipeline:
+    - name: agent runs
+      runs: |
+        percona-telemetry-agent --version | grep -F "Version: v@@telemetry_agent_version@@"
+        percona-telemetry-agent --help >/dev/null
+    - name: scripts parse
+      runs: |
+        bash -n /usr/bin/telemetry-agent-supervisor.sh
+        bash -n /call-home.sh
+        test -x /call-home.sh
+        grep -q 'PRODUCT_FAMILY_PS' /usr/bin/telemetry-agent-supervisor.sh
+        grep -q '^PERCONA_TELEMETRY_URL=' /etc/sysconfig/percona-telemetry-agent
+    - name: directories
+      runs: |
+        test -d /usr/local/percona/telemetry/history
+        test -x /usr/bin/telemetry-agent-supervisor.sh
+        test -w /var/log/percona
+        test -d /var/log/percona/telemetry-agent
+
+update:
+  enabled: false

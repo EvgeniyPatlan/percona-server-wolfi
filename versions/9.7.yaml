@@ -1,0 +1,88 @@
+# Percona Server 9.7 on Wolfi - product versions and pins.
+# Flat "key: value" file. Researched 2026-11-13 (see docs/research.md for sources).
+
+# --- Percona Server (github.com/percona/percona-server) ---
+# VERIFY-BEFORE-RELEASE: official image is 9.7.2-3.1; re-check for a Percona-Server-9.7.2-3 tag
+ps_tag: "Percona-Server-9.7.2-2"
+ps_version: "9.7.2"
+ps_release: "2"
+# peeled commit of the tag (tag object d24a2a506b17...)
+ps_commit: "91438a0430fbcd52dd85472edf3b357484484c22"
+# "Revision" in COMPILATION_COMMENT / version_comment: first 8 hex digits of ps_commit (Percona's builder uses
+# `git rev-parse --short HEAD`; the official 9.7.2-3 image reports an 8-digit "Revision 45d3d00f")
+ps_revision: "91438a04"
+# committer time of ps_commit: 2026-09-20T11:01:38Z
+source_date_epoch: "1789902098"
+
+# --- Hardening baseline for every compiled recipe (percona-server, percona-mysql-shell) ---
+# Ruling R7: distro-style hardening (the official images are RHEL rpms built with redhat-rpm-config hardening).
+# Added to each recipe's own CFLAGS/CXXFLAGS/LDFLAGS; -O/-g stay with CMAKE_BUILD_TYPE. -U first so a compiler
+# built-in or inherited _FORTIFY_SOURCE level cannot clash (MySQL adds none: WITH_PACKAGE_FLAGS is off/undetected).
+hardening_cflags: "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security"
+hardening_ldflags: "-Wl,-z,relro -Wl,-z,now"
+
+# --- V8 (JS stored programs in the server; build_v8.sh in build-ps @ ps_tag) ---
+v8_tag: "12.9.202.22"
+# produced by scripts/vendor-v8.sh on the build host; cannot be known on the laptop
+v8_src_sha256: "TODO-UNRESOLVED"
+
+# --- MySQL Shell (upstream mysql/mysql-shell tag, built by Percona packaging) ---
+# official image MYSQL_SHELL_VERSION (percona-mysql-shell rpm version-release)
+mysqlsh_version: "9.7.1-2"
+# upstream git tag (and commit ad74f712a312fa62bfc9e3c9c92a509369bca55e)
+mysqlsh_tag: "9.7.1"
+mysqlsh_commit: "ad74f712a312fa62bfc9e3c9c92a509369bca55e"
+mysqlsh_src_url: "https://github.com/mysql/mysql-shell/archive/refs/tags/9.7.1.tar.gz"
+mysqlsh_src_sha256: "dbafcad09acb50d203a64dd33e25b475dba40fc31c56d45de88f365b42b4fc04"
+# mysql-shell 9.7.1 has no V8 dependency; JavaScript uses an optional prebuilt GraalVM
+# polyglot "jit executor" library that Percona downloads (see docs/research.md section 1)
+jit_executor_url: "https://downloads.percona.com/downloads/packaging/polyglot-nativeapi-native-library-lje_23.0.1_x86_64_el8.tar.gz"
+jit_executor_sha256: "36153377bcb65a7b2fd65f0a25d658c5a6b56070f4959feb9344d55912e2e436"
+# apk-legal form of mysqlsh_version (apk rejects "-"; same convention as percona-server: 9.7.1-2 -> 9.7.1.2)
+mysqlsh_apk_version: "9.7.1.2"
+# Python the shell embeds (HAVE_PYTHON=1, Wolfi python-<x.y>). Percona's el9 rpm (the official image) bundles 3.11.13.
+mysqlsh_python: "3.11"
+# ANTLR4 C++ runtime required by mysql-shell (not in Wolfi); Percona's builder builds tag 4.13.2 shared and bundles it
+antlr4_version: "4.13.2"
+antlr4_url: "https://github.com/antlr/antlr4/archive/refs/tags/4.13.2.tar.gz"
+antlr4_sha256: "9f18272a9b32b622835a3365f850dd1063d60f5045fb1e12ce475ae6e18a35bb"
+
+# --- Telemetry agent (github.com/percona/telemetry-agent) ---
+# inferred: newest rpm in the telemetry repo when the official image was built (see research.md)
+# VERIFY-BEFORE-RELEASE: inferred, confirm via rpm -q percona-telemetry-agent in official image
+telemetry_agent_version: "1.0.20"
+telemetry_agent_commit: "33457ea97dd22dd22b0c5b9e9ee0f65314135691"
+
+# --- call-home.sh (github.com/Percona-Lab/telemetry-agent tag phase-0.1) ---
+call_home_version: "0.1"
+call_home_url: "https://github.com/Percona-Lab/telemetry-agent/archive/refs/tags/phase-0.1.tar.gz"
+call_home_sha256: "5e84d2f1a5d57f44c46e6a1f16794d649d3de09fe8021f0294bc321c89e51068"
+
+# --- /etc/my.cnf of the images: the RPM's build-ps/rpm/mysqld.cnf at ps_commit, edited as the official Dockerfile does ---
+ps_mycnf_url: "https://raw.githubusercontent.com/percona/percona-server/91438a0430fbcd52dd85472edf3b357484484c22/build-ps/rpm/mysqld.cnf"
+ps_mycnf_sha256: "e9cede360a983b8be685d145f35b5ad17d40ba327b32cfab2b6bff8df43539a1"
+
+# --- percona-docker (percona-server-9.x) ---
+# main HEAD on 2026-11-13; percona-server-9.x/Dockerfile (PS_VERSION 9.7.2-3.1) is identical here
+percona_docker_commit: "91391598878bb16a47a2655147cb85878858ca36"
+
+# --- MeCab (full-text parser plugin); Debian orig tarballs (upstream Google Drive link is not scriptable) ---
+mecab_version: "0.996"
+mecab_url: "https://deb.debian.org/debian/pool/main/m/mecab/mecab_0.996.orig.tar.gz"
+mecab_sha256: "e073325783135b72e666145c781bb48fada583d5224fb2490fb6c1403ba69c59"
+mecab_ipadic_version: "2.7.0-20070801"
+# apk-legal form of the above (apk rejects "-"; Debian date suffix becomes _p)
+mecab_ipadic_apk_version: "2.7.0_p20070801"
+mecab_ipadic_url: "https://deb.debian.org/debian/pool/main/m/mecab-ipadic/mecab-ipadic_2.7.0-20070801+main.orig.tar.gz"
+mecab_ipadic_sha256: "b62f527d881c504576baed9c6ef6561554658b175ce6ae0096a60307e49e3523"
+
+# --- Boost used by the PS 9.7 source tree (cmake/boost.cmake: boost_1_87_0) ---
+# PS 9.7 ships it in-tree (extra/boost/boost_1_87_0, the cmake default), so no tarball is fetched for
+# percona-server / percona-mysql-shell; mysql-shell 9.7.1 itself does not use Boost.
+boost_version: "1.87.0"
+
+# --- Official images (index digests, 2026-11-13) used as the compatibility baseline ---
+# percona/percona-server:9.7 == 9.7.2-3 == 9.7.2-3.1
+official_ps_image: "docker.io/percona/percona-server@sha256:7b1225974980bfb2f7eda4ee54f5d8fdf01e0a647741a26d6222f948470cb684"
+# previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
+official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"

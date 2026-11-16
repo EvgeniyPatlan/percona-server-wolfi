@@ -1,0 +1,57 @@
+# Image behaviour tests (tests/image/*.bats): run on the build host against built images, see docs/BUILD-HOST.md.
+# IMAGE is the -dev image; the distroless image is derived from it (name without -dev), or set
+# PS_IMAGE_DEV / PS_IMAGE_DISTROLESS. DOCKER may be overridden (see mk/images.mk). Every suite pulls its images from
+# the registry in setup_file (a failed pull fails the suite; PS_PULL=0 uses images already in the local docker), and
+# scripts/run-bats.sh fails a suite in which every test was skipped.
+RUN_BATS = scripts/run-bats.sh $(BATS)
+IMAGE ?= $(REGISTRY)/percona-server:9.7-dev
+
+.PHONY: test-image
+test-image: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/server-init.bats \
+	  tests/image/server-runtime.bats tests/image/server-plugins.bats)
+
+# Compatibility diff against the official image (needs docker and network for the pull; see docs/BUILD-HOST.md).
+# OFFICIAL defaults to the digest pinned in the version file. Result: out/results/compat-<ts>.diff. IMAGE is pulled
+# first, so a stale local copy of the tag is never compared.
+OFFICIAL ?= $(shell source scripts/lib/common.sh; vars_get $(VERSION_FILE) official_ps_image)
+
+.PHONY: test-compat
+test-compat:
+	$(call logged, $(DOCKER) pull -q "$(IMAGE)" > /dev/null; \
+	  DOCKER="$(DOCKER)" tests/compat/compare.sh "$(OFFICIAL)" "$(IMAGE)")
+
+# Upgrade gate: Wolfi -dev image on datadirs created by the official images (official_ps_image and
+# official_ps_prev_image of the version file; pulls them, ~1 GB each). Expectations: out/results/upgrade-*.expect.
+.PHONY: test-upgrade
+test-upgrade: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/upgrade.bats)
+
+# mysqlsh in the -dev image: three-member group replication cluster, util.dumpInstance/loadDump (docker only, ~10 min).
+.PHONY: test-mysqlsh
+test-mysqlsh: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/mysqlsh.bats)
+
+# Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
+# local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
+# in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).
+SUITES ?= main,innodb,rocksdb,sys_vars,audit_log_filter,component_keyring_file
+MTR_PARALLEL ?= $(shell nproc)
+MTR_TMPFS_SIZE ?= 24g
+comma := ,
+MTR_ARGS ?=
+MTR_EXTRA_PKGS ?=
+
+.PHONY: mtr-nightly
+mtr-nightly:
+	$(call logged, source scripts/lib/common.sh; source scripts/lib/keys.sh; \
+	  test -s "$$APK_PUBKEY" || die "public key not found: $$APK_PUBKEY (run make keys)"; \
+	  test -f out/repo/x86_64/APKINDEX.tar.gz || die "no out/repo: run make packages first"; \
+	  for s in $$(tr , ' ' <<<"$(SUITES)"); do test -f "tests/mtr/skip-$$s.txt" || die "no tests/mtr/skip-$$s.txt"; done; \
+	  mkdir -p out/results; \
+	  $(DOCKER) run --rm --user 0 --tmpfs /mtrvar:exec$(comma)size=$(MTR_TMPFS_SIZE) \
+	    -v "$$PWD:/work:ro" -v "$$PWD/out/repo:/repo:ro" -v "$$PWD/out/results:/results" \
+	    -v "$$(realpath "$$APK_PUBKEY"):/etc/apk/keys/ps-wolfi.rsa.pub:ro" \
+	    -e SUITES="$(SUITES)" -e PARALLEL="$(MTR_PARALLEL)" -e MTR_ARGS="$(MTR_ARGS)" -e MTR_EXTRA_PKGS="$(MTR_EXTRA_PKGS)" \
+	    -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)" \
+	    --entrypoint /work/scripts/mtr-container.sh "$$(vars_get versions/tools.yaml wolfi_sdk)")

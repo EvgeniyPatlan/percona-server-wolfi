@@ -1,0 +1,172 @@
+# percona-server:@@ps_version@@-@@ps_release@@-dev - drop-in replacement for the official percona/percona-server:9.7
+# (percona-docker percona-server-9.x/Dockerfile at percona_docker_commit). Directive mapping and every difference:
+# docs/deviations.md ("image" rows). Built by scripts/apko-build.sh; the package set is pinned by
+# images/percona-server-dev.lock.json. Local packages (out/repo) and their key come from the command line.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # entrypoint tooling (Dockerfile: hostname which tar findutils; busybox has the hostname and which applets)
+    - busybox
+    - bash
+    - coreutils
+    - findutils
+    - gnutar
+    - tzdata
+    - jemalloc
+    # Dockerfile: percona-server-server, -devel, -rocksdb, percona-icu-data-files, percona-mysql-shell
+    - percona-server-server
+    - percona-server-client
+    - percona-server-rocksdb
+    - percona-server-icu-data-files
+    - percona-server-dev
+    # JavaScript stored programs (spec goal 2; not in the official image, see docs/deviations.md)
+    - percona-server-js
+    # mysqld_safe, mysqld_multi, mysqldumpslow, ps-admin (RPM: in percona-server-server; INIT_ROCKSDB uses ps-admin)
+    - percona-server-scripts
+    - percona-mysql-shell
+    # rpm dependency of percona-server-server in the official image + Dockerfile telemetry files
+    - percona-telemetry-agent
+    # ps-entry.sh as /docker-entrypoint.sh, dockerdir/, docker.cnf, /etc/sysconfig/mysql, edited /etc/my.cnf
+    - percona-server-docker-scripts
+    - percona-server-docker-config
+
+# Dockerfile: groupadd -g 1001 mysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -m -c "Default Application User" mysql
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: install -m 0775 -o mysql -g root -d /var/lib/mysql /var/run/mysqld /docker-entrypoint-initdb.d,
+# chown -R mysql:root /etc/my.cnf /etc/my.cnf.d + chmod -R ug+rwX. /var/run is a symlink to /run in
+# wolfi-baselayout, so the real directory /run/mysqld is created (/var/run/mysqld resolves to it).
+paths:
+  - path: /var/lib/mysql
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  # RPM: %attr(750, mysql, mysql); the compiled-in --secure-file-priv
+  - path: /var/lib/mysql-files
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o750
+  - path: /run/mysqld
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /docker-entrypoint-initdb.d
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  # VOLUME target; not created by the official Dockerfile (docker creates the mount point as root). Created here
+  # writable for the mysql user / group root so a log volume works under any uid.
+  - path: /var/log/mysql
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  # useradd -m
+  - path: /home/mysql
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o700
+  # apko does not keep the owners recorded in the apks (it keeps the modes): every non-root owner the Dockerfile
+  # sets is applied here (checked on a laptop smoke image, see docs/deviations.md).
+  # Dockerfile: chown mysql /usr/bin/telemetry-agent-supervisor.sh /usr/bin/percona-telemetry-agent
+  # /usr/local/percona/telemetry/history; chown mysql:mysql /usr/local/percona
+  - path: /usr/local/percona
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /usr/local/percona/telemetry
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /usr/local/percona/telemetry/history
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /usr/bin/percona-telemetry-agent
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o755
+  - path: /usr/bin/telemetry-agent-supervisor.sh
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  # Dockerfile: install -m 0664 -o mysql -g root /dev/null /etc/sysconfig/mysql
+  - path: /etc/sysconfig/mysql
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o664
+  # Dockerfile: chown -R mysql:root /etc/my.cnf /etc/my.cnf.d; chmod -R ug+rwX
+  - path: /etc/my.cnf
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o664
+  - path: /etc/my.cnf.d
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /etc/my.cnf.d/docker.cnf
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o664
+
+entrypoint:
+  command: /docker-entrypoint.sh
+cmd: mysqld
+work-dir: /
+
+# Dockerfile ENV. PERCONA_TELEMETRY_* verbatim. Version values are ours (Wolfi build of @@ps_version@@-@@ps_release@@).
+# PERCONA_TELEMETRY_DISABLE is a build ARG in the Dockerfile, not an ENV: unset at runtime (telemetry on).
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  PS_VERSION: "@@ps_version@@-@@ps_release@@"
+  MYSQL_SHELL_VERSION: "@@mysqlsh_version@@"
+  OS_VER: wolfi
+  FULL_PERCONA_VERSION: "@@ps_version@@-@@ps_release@@.wolfi"
+  FULL_MYSQL_SHELL_VERSION: "@@mysqlsh_version@@.wolfi"
+  PS_TELEMETRY_VERSION: "@@ps_version@@-@@ps_release@@"
+  CALL_HOME_VERSION: "@@call_home_version@@"
+  CALL_HOME_DOWNLOAD_SHA256: "@@call_home_sha256@@"
+  CALL_HOME_OPTIONAL_PARAMS: " -s wolfi"
+  PERCONA_TELEMETRY_CHECK_INTERVAL: "86400"
+  PERCONA_TELEMETRY_HISTORY_KEEP_INTERVAL: "604800"
+  PERCONA_TELEMETRY_RESEND_INTERVAL: "60"
+  PERCONA_TELEMETRY_URL: https://check.percona.com/v1/telemetry/GenericReport
+
+annotations:
+  org.opencontainers.image.title: percona-server
+  org.opencontainers.image.description: Percona Server for MySQL @@ps_version@@-@@ps_release@@ built from source on Wolfi, with entrypoint, telemetry agent and MySQL Shell (drop-in for percona/percona-server:9.7). Not an official Percona image.
+  org.opencontainers.image.version: "@@ps_version@@-@@ps_release@@-dev"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64

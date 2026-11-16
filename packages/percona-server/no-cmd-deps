@@ -1,0 +1,8 @@
+# Subpackages installed in the distroless percona-server image: no generated cmd:<interpreter> dependency allowed
+# (scripts/check-no-cmd-deps.sh, run by scripts/melange-build.sh after the build). Scripts go to percona-server-scripts.
+percona-server-server
+percona-server-client
+percona-server-libs
+percona-server-rocksdb
+percona-server-js
+percona-server-icu-data-files

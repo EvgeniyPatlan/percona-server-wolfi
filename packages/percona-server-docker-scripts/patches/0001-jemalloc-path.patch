@@ -1,0 +1,16 @@
+Wolfi deviation 1 of 2 (docs/deviations.md, "ps-entry.sh jemalloc path"): the EL9 image preloads
+/usr/lib64/libjemalloc.so.1 (EPEL jemalloc). Wolfi's jemalloc package ships only
+/usr/lib/libjemalloc.so.2 (no .so.1 at all); /usr/lib64 is a symlink to lib. Only used when
+INIT_TOKUDB is set. Same path as LD_PRELOAD in /etc/sysconfig/mysql.
+
+--- a/ps-entry.sh	2026-11-13 23:03:20.173083042 +0200
++++ b/ps-entry.sh	2026-11-13 23:03:20.175083040 +0200
+@@ -85,7 +85,7 @@
+ 	_check_config "$@"
+ 
+ 	if [ -n "$INIT_TOKUDB" ]; then
+-		export LD_PRELOAD=/usr/lib64/libjemalloc.so.1
++		export LD_PRELOAD=/usr/lib/libjemalloc.so.2
+ 	fi
+ 	# Get config
+ 	DATADIR="$(_get_config 'datadir' "$@")"
