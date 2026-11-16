@@ -14,7 +14,7 @@ ps_revision: "91438a04"
 # committer time of ps_commit: 2026-09-20T11:01:38Z
 source_date_epoch: "1789902098"
 
-# --- Hardening baseline for every compiled recipe (percona-server, percona-mysql-shell) ---
+# --- Hardening baseline for every compiled recipe (percona-server, percona-mysql-shell, percona-xtrabackup) ---
 # Ruling R7: distro-style hardening (the official images are RHEL rpms built with redhat-rpm-config hardening).
 # Added to each recipe's own CFLAGS/CXXFLAGS/LDFLAGS; -O/-g stay with CMAKE_BUILD_TYPE. -U first so a compiler
 # built-in or inherited _FORTIFY_SOURCE level cannot clash (MySQL adds none: WITH_PACKAGE_FLAGS is off/undetected).
@@ -47,6 +47,19 @@ antlr4_version: "4.13.2"
 antlr4_url: "https://github.com/antlr/antlr4/archive/refs/tags/4.13.2.tar.gz"
 antlr4_sha256: "9f18272a9b32b622835a3365f850dd1063d60f5045fb1e12ce475ae6e18a35bb"
 
+# --- Percona XtraBackup (github.com/percona/percona-xtrabackup) ---
+pxb_tag: "percona-xtrabackup-9.7.2-2"
+# peeled commit of the tag (tag object 06d530626d48...)
+pxb_commit: "59328573fbbad763b20e0057f639634102f0a2f9"
+# XB_VERSION at pxb_commit: 9.7.2 / XB_VERSION_EXTRA -2; apk version is pxb_version.pxb_release (9.7.2.2)
+pxb_version: "9.7.2"
+pxb_release: "2"
+# "revision id" in `xtrabackup --version`: first 8 hex digits of pxb_commit (Percona builds from a `make dist` tarball,
+# where cmake/mysql_version.cmake takes `cut -c 1-8` of the INFO_SRC commit; from git it is `rev-parse --short`)
+pxb_revision: "59328573"
+# Python of the Wolfi sphinx used to generate the man pages (-DWITH_MAN_PAGES=1 runs sphinx-build; no prebuilt pages in-tree)
+pxb_sphinx_python: "3.13"
+
 # --- Telemetry agent (github.com/percona/telemetry-agent) ---
 # inferred: newest rpm in the telemetry repo when the official image was built (see research.md)
 # VERIFY-BEFORE-RELEASE: inferred, confirm via rpm -q percona-telemetry-agent in official image
@@ -62,7 +75,7 @@ call_home_sha256: "5e84d2f1a5d57f44c46e6a1f16794d649d3de09fe8021f0294bc321c89e51
 ps_mycnf_url: "https://raw.githubusercontent.com/percona/percona-server/91438a0430fbcd52dd85472edf3b357484484c22/build-ps/rpm/mysqld.cnf"
 ps_mycnf_sha256: "e9cede360a983b8be685d145f35b5ad17d40ba327b32cfab2b6bff8df43539a1"
 
-# --- percona-docker (percona-server-9.x) ---
+# --- percona-docker (percona-server-9.x, percona-xtrabackup-9.x) ---
 # main HEAD on 2026-11-13; percona-server-9.x/Dockerfile (PS_VERSION 9.7.2-3.1) is identical here
 percona_docker_commit: "91391598878bb16a47a2655147cb85878858ca36"
 
@@ -76,7 +89,7 @@ mecab_ipadic_apk_version: "2.7.0_p20070801"
 mecab_ipadic_url: "https://deb.debian.org/debian/pool/main/m/mecab-ipadic/mecab-ipadic_2.7.0-20070801+main.orig.tar.gz"
 mecab_ipadic_sha256: "b62f527d881c504576baed9c6ef6561554658b175ce6ae0096a60307e49e3523"
 
-# --- Boost used by the PS 9.7 source tree (cmake/boost.cmake: boost_1_87_0) ---
+# --- Boost used by PS and PXB 9.7 source trees (cmake/boost.cmake: boost_1_87_0) ---
 # PS 9.7 ships it in-tree (extra/boost/boost_1_87_0, the cmake default), so no tarball is fetched for
 # percona-server / percona-mysql-shell; mysql-shell 9.7.1 itself does not use Boost.
 boost_version: "1.87.0"
@@ -84,5 +97,7 @@ boost_version: "1.87.0"
 # --- Official images (index digests, 2026-11-13) used as the compatibility baseline ---
 # percona/percona-server:9.7 == 9.7.2-3 == 9.7.2-3.1
 official_ps_image: "docker.io/percona/percona-server@sha256:7b1225974980bfb2f7eda4ee54f5d8fdf01e0a647741a26d6222f948470cb684"
+# percona/percona-xtrabackup:9.7 == 9.7.2-2 == 9.7.2-2.1
+official_pxb_image: "docker.io/percona/percona-xtrabackup@sha256:07e883d6aab312ba14a5bf47d8d647690ce0db10a083d9d2d572c19c84884b4b"
 # previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
 official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"

@@ -8,7 +8,7 @@
 #   4. apko publish -> $REGISTRY (default localhost:5000) with the tags below; the index digest is written to
 #      out/results/<name>.digest (compare runs with `scripts/verify-repro.sh images`).
 # Tags: percona-server:<series>, :<ps_version>-<ps_release> (+ -<BUILD_ID> when set); the -dev image is the same
-# repository with a -dev suffix.
+# repository with a -dev suffix; percona-xtrabackup:<series>, :<pxb_version>-<pxb_release>.
 # Reproducible inputs: build date from source_date_epoch, VCS autodetection off, the revision annotation is the last
 # commit that touched the build inputs or images/*.tmpl (<sha>-dirty when those have uncommitted changes; RELEASE=1
 # refuses that unless ALLOW_DIRTY=1).
@@ -20,7 +20,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/keys.sh"
 cd "$here/.."
 
-usage() { die "usage: apko-build.sh <percona-server|percona-server-dev> [--no-publish]"; }
+usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup> [--no-publish]"; }
 (($#)) || usage
 name=$1
 shift
@@ -40,7 +40,7 @@ series=$(v ps_version | cut -d. -f1-2)
 # forbid: packages that must not end up in the image (regex on package names, checked against the lock file
 # before building). distroless=1: after the build the image's file list must not contain a shell or apk either.
 # Rules: no shell/apk and no perl/python in the distroless image; mysqlsh (+ the -jit blob, ruling R4) and the telemetry agent only in
-# -dev.
+# -dev; percona-xtrabackup-docker-scripts and percona-telemetry-agent never together (both ship /call-home.sh).
 shells='busybox[a-z0-9-]*|bash|dash|toybox|mksh|zsh|oksh|[a-z0-9-]*-binsh|apk-tools[a-z0-9-]*'
 dev_only='percona-mysql-shell[a-z0-9-]*|percona-telemetry-agent'
 # distroless only: no script interpreters either. percona-server-scripts (mysqld_safe, ps-admin, ...) and Wolfi's
@@ -49,8 +49,9 @@ interpreters='perl[a-z0-9-]*|python[a-z0-9.-]*|percona-server-scripts|jemalloc'
 forbid='' distroless=0
 case $name in
   percona-server) repo_name=percona-server suffix='' full=$ps_full distroless=1
-    forbid="$shells|$interpreters|$dev_only|percona-server-docker-scripts" ;;
-  percona-server-dev) repo_name=percona-server suffix=-dev full=$ps_full ;;
+    forbid="$shells|$interpreters|$dev_only|percona-server-docker-scripts|percona-xtrabackup-docker-scripts" ;;
+  percona-server-dev) repo_name=percona-server suffix=-dev full=$ps_full forbid='percona-xtrabackup-docker-scripts' ;;
+  percona-xtrabackup) repo_name=percona-xtrabackup suffix='' full=$(v pxb_version)-$(v pxb_release) forbid=$dev_only ;;
   *) die "unknown image: $name" ;;
 esac
 

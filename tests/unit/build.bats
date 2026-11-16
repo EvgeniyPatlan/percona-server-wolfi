@@ -21,9 +21,10 @@ case \$1 in
 esac
 [[ \$1 != \${STUB_FAIL:-none} ]]
 STUB
-  cat > "$T/bin/curl" <<'STUB'
+  cat > "$T/bin/curl" <<STUB
 #!/usr/bin/env bash
-exit "${STUB_CURL_RC:-0}"
+echo "\${*: -1}" >> "$T/curl.log"
+exit "\${STUB_CURL_RC:-0}"
 STUB
   chmod +x "$T/bin/make" "$T/bin/curl"
   export MAKE_CMD="$T/bin/make" CURL="$T/bin/curl" STAMP_DIR="$T/stamps" APK_REPO="$T/repo" IMAGES_DIR="$T/img" \
@@ -47,10 +48,11 @@ have_apks() {
 @test "fresh tree: every package and image is planned, a dry run calls nothing" {
   run "$S" -n
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 7 ]
+  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 9 ]
   [[ $output == *"BUILD package percona-server (no $T/repo/x86_64/percona-server-9.7.2.2-r0.apk)"* ]]
   [[ $output == *"BUILD image percona-server (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-server-dev (no lock file (first build))"* ]]
+  [[ $output == *"BUILD image percona-xtrabackup (no lock file (first build))"* ]]
   [ ! -e "$T/calls" ]
 }
 
@@ -63,15 +65,17 @@ have_apks() {
   [ "${lines[1]}" = "pkg-mecab RELOCK=" ]
   [ "${lines[3]}" = "vendor-v8 RELOCK=" ]
   [ "${lines[4]}" = "pkg-v8 RELOCK=" ]
-  [ "${lines[8]}" = "pkg-percona-server-docker-scripts RELOCK=" ]
-  [ "${lines[9]}" = "registry-up RELOCK=" ]
-  [ "${lines[10]}" = "image-percona-server RELOCK=" ]
-  [ "${lines[11]}" = "image-percona-server-dev RELOCK=" ]
-  [ -s "$T/stamps/pkg-percona-server" ] && [ -s "$T/stamps/image-percona-server-dev" ]
+  [ "${lines[7]}" = "pkg-percona-xtrabackup RELOCK=" ]
+  [ "${lines[10]}" = "pkg-percona-xtrabackup-docker-scripts RELOCK=" ]
+  [ "${lines[11]}" = "registry-up RELOCK=" ]
+  [ "${lines[12]}" = "image-percona-server RELOCK=" ]
+  [ "${lines[13]}" = "image-percona-server-dev RELOCK=" ]
+  [ "${lines[14]}" = "image-percona-xtrabackup RELOCK=" ]
+  [ -s "$T/stamps/pkg-percona-server" ] && [ -s "$T/stamps/image-percona-xtrabackup" ]
   rm "$T/calls"
   run "$S"
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^SKIP' <<< "$output")" -eq 9 ]
+  [ "$(grep -c '^SKIP' <<< "$output")" -eq 12 ]
   run cat "$T/calls"
   [ "$output" = "registry-up RELOCK=" ]
 }
@@ -83,7 +87,8 @@ have_apks() {
   VERSION_FILE=$T/v.yaml run "$S" -n --packages-only
   [[ $output == *"SKIP  package mecab (up to date)"* ]]
   [[ $output == *"SKIP  package percona-telemetry-agent (up to date)"* ]]
-  for p in v8 percona-server percona-mysql-shell percona-server-docker-scripts; do
+  [[ $output == *"SKIP  package percona-xtrabackup-docker-scripts (up to date)"* ]]
+  for p in v8 percona-server percona-mysql-shell percona-xtrabackup percona-server-docker-scripts; do
     [[ $output == *"BUILD package $p (inputs changed)"* ]]
   done
 }
@@ -107,6 +112,23 @@ have_apks() {
   [[ $output != *"percona-telemetry-agent"* ]]
   [[ $output != *"image percona-server-dev"* ]]
   [[ $output == *"BUILD package percona-server-docker-scripts"* ]]
+  [[ $output != *"xtrabackup"* ]]
+}
+
+@test "xtrabackup only: the server packages it links against, no -dev extras; its own registry repository" {
+  run "$S" -n percona-xtrabackup
+  [[ $output == *"BUILD package percona-server ("* ]]
+  [[ $output == *"BUILD package percona-xtrabackup ("* ]]
+  [[ $output == *"BUILD package percona-xtrabackup-docker-scripts ("* ]]
+  [[ $output != *"percona-mysql-shell"* ]]
+  [[ $output != *"percona-telemetry-agent"* ]]
+  [[ $output != *"percona-server-docker-scripts"* ]]
+  [[ $output != *"image percona-server"* ]]
+  have_apks
+  "$S" percona-xtrabackup > /dev/null 2>&1
+  run "$S" -n percona-xtrabackup
+  [[ $output == *"SKIP  image percona-xtrabackup (up to date)"* ]]
+  grep -q "^http://localhost:5000/v2/percona-xtrabackup/manifests/sha256:" "$T/curl.log"
 }
 
 @test "stale lock: the image is re-locked (RELOCK=1) and the rewrite is reported, even with --images-only" {
@@ -130,7 +152,7 @@ EOF
   STUB_CURL_RC=22 run "$S" -n --images-only
   [[ $output == *"BUILD image percona-server (digest not in localhost:5000)"* ]]
   run "$S" -n -f
-  [ "$(grep -c '(--force)' <<< "$output")" -eq 9 ]
+  [ "$(grep -c '(--force)' <<< "$output")" -eq 12 ]
 }
 
 @test "bad arguments are rejected" {

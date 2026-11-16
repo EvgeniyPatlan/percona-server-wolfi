@@ -25,8 +25,8 @@ lint-recipes: render
 	  if [ $$n -eq 0 ]; then log_info "lint-recipes: no rendered recipes - nothing to lint"; fi)
 
 # Package builds (melange, privileged container). Order matters: later packages depend on earlier ones.
-PACKAGES := mecab mecab-ipadic v8 percona-server percona-mysql-shell \
-  percona-telemetry-agent percona-server-docker-scripts
+PACKAGES := mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtrabackup \
+  percona-telemetry-agent percona-server-docker-scripts percona-xtrabackup-docker-scripts
 
 .PHONY: packages $(addprefix pkg-,$(PACKAGES))
 

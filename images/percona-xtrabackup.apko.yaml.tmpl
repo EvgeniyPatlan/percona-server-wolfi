@@ -1,0 +1,90 @@
+# percona-xtrabackup:@@pxb_version@@-@@pxb_release@@ - drop-in replacement for the official percona/percona-xtrabackup:9.7
+# (percona-docker percona-xtrabackup-9.x/Dockerfile at percona_docker_commit; facts in docs/research.md section 2).
+# Not included (docs/deviations.md): percona-xtradb-cluster-garbd, AWS CLI v2, azure-cli, shadow-utils.
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    - busybox
+    - bash
+    - coreutils
+    - findutils
+    # Dockerfile: tar unzip, socat hostname jq procps-ng qpress lz4 zstd, glibc-langpack-en
+    - gnutar
+    - unzip
+    - socat
+    - jq
+    - procps
+    - qpress
+    - lz4
+    - zstd
+    - glibc-locale-en
+    - curl
+    - ca-certificates-bundle
+    # Dockerfile: percona-xtrabackup-97, percona-server-shared, percona-server-client
+    - percona-xtrabackup
+    - percona-server-libs
+    - percona-server-client
+    # pxb-entry.sh as /docker-entrypoint.sh, /call-home.sh, /backup, /usr/local/percona
+    # (never together with percona-telemetry-agent: both ship /call-home.sh)
+    - percona-xtrabackup-docker-scripts
+
+# Dockerfile: groupadd -g 1001 mysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -c "Default Application User" mysql
+# (no -m: the home directory is not created)
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: install -d -o 1001 -g 0 -m 0775 /backup; chown mysql:mysql /usr/local/percona (also in the apk)
+paths:
+  - path: /backup
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /usr/local/percona
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+
+entrypoint:
+  command: /docker-entrypoint.sh
+cmd: /usr/bin/xtrabackup
+work-dir: /
+
+# Dockerfile ENV; version values are ours. PXC_REPO/PS_REPO/PXB_REPO/TOOLS_REPO/KEY_RPM_DOWNLOAD_SHA256 describe
+# the rpm repositories of the build and are not set.
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  XTRABACKUP_VERSION: "@@pxb_version@@-@@pxb_release@@"
+  PS_VERSION: "@@ps_version@@-@@ps_release@@"
+  OS_VER: wolfi
+  FULL_PERCONA_VERSION: "@@ps_version@@-@@ps_release@@.wolfi"
+  FULL_PERCONA_XTRABACKUP_VERSION: "@@pxb_version@@-@@pxb_release@@.wolfi"
+  PXB_TELEMETRY_VERSION: "@@pxb_version@@-@@pxb_release@@"
+  CALL_HOME_VERSION: "@@call_home_version@@"
+  CALL_HOME_DOWNLOAD_SHA256: "@@call_home_sha256@@"
+  CALL_HOME_OPTIONAL_PARAMS: " -s wolfi"
+
+annotations:
+  org.opencontainers.image.title: percona-xtrabackup
+  org.opencontainers.image.description: Percona XtraBackup @@pxb_version@@-@@pxb_release@@ built from source on Wolfi (drop-in for percona/percona-xtrabackup:9.7). Not an official Percona image.
+  org.opencontainers.image.version: "@@pxb_version@@-@@pxb_release@@"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64

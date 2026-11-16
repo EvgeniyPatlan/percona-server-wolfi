@@ -9,7 +9,7 @@ reference sections below it explain each component, what to send back when it fa
     make tools-pull keys          # once: pull pinned tool images, generate signing keys (then commit the public keys)
     make phase-a                  # sources vendor-v8 packages repro-all verify-repro
     make phase-b                  # registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh
-                                  #   scan sign verify-sign
+                                  #   test-xtrabackup scan sign verify-sign
     make all                      # phase-a phase-b, then report (always, even after a failure)
     make mtr-nightly              # not part of `all`: upstream MTR suites, run separately (hours)
     scripts/build.sh              # incremental: only out-of-date packages/images (-n: plan only); not for releases
@@ -85,9 +85,9 @@ of them (`make keys` warns).
    commit, then re-run. `phase-a` runs `vendor-v8` itself: with `sources/v8-<tag>.tar.gz` present it only re-hashes the
    tarball (no fetch; `FORCE=1` re-vendors) and passes when the sha matches; an unset, `TODO-UNRESOLVED` or different
    hash stops `phase-a` / `all` there, before any package is built. See "V8".
-2. `make phase-a` then runs `sources` (pinned tarballs), `vendor-v8`, `packages` (the seven packages in the order of
-   `PACKAGES` in `mk/packages.mk`: mecab, mecab-ipadic, v8, percona-server, percona-mysql-shell,
-   percona-telemetry-agent and percona-server-docker-scripts, each with its `melange test`), then the
+2. `make phase-a` then runs `sources` (pinned tarballs), `vendor-v8`, `packages` (the nine packages in the order of
+   `PACKAGES` in `mk/packages.mk`: mecab, mecab-ipadic, v8, percona-server, percona-mysql-shell, percona-xtrabackup,
+   percona-telemetry-agent and the two docker-scripts packages, each with its `melange test`), then the
    reproducibility check.
 3. Reproducibility cost: `verify-repro` needs a second, ccache-less build of every package (`repro-all` runs
    `make repro-build PKG=<name>` for each, into `out/repo-repro`). That second build repeats the full compile, so it
@@ -104,14 +104,14 @@ container). It never touches `out/repo`, `out/cache`, `out/results` or `out/logs
 
 Needs phase A's `out/repo` and committed build inputs (images record the last commit that touched `packages scripts
 versions mk Makefile images/*.tmpl` as their revision; committing the lock files or docs does not change it). It runs `registry-up` (local registry
-on 127.0.0.1:5000), `images` (percona-server, percona-server-dev; creates `images/*.lock.json` on
+on 127.0.0.1:5000), `images` (percona-server, percona-server-dev, percona-xtrabackup; creates `images/*.lock.json` on
 the first run), `repro-images` (a second, independent build of each image from the same lock files, digests must
-match: see "Images"), `test-image`, `test-compat`, `test-upgrade`, `test-mysqlsh`, `scan`, `sign` and
+match: see "Images"), `test-image`, `test-compat`, `test-upgrade`, `test-mysqlsh`, `test-xtrabackup`, `scan`, `sign` and
 `verify-sign`. apko publishes the images to the registry only (nothing is loaded into the local docker), so every image
 test suite starts with `docker pull` of the refs it tests (`setup_file`); a failed pull fails the whole suite (never a
 skip). `scripts/run-bats.sh` also fails a suite in which every test was skipped, so a wrong `IMAGE` cannot pass
 silently.
-Expect roughly 2-3 hours for the tests (25-40 min image tests, 10 min mysqlsh, upgrade and
+Expect roughly 2-3 hours for the tests (25-40 min image tests, 10 min mysqlsh, 25-35 min xtrabackup, upgrade and
 compat pulls of about 1 GB each) plus scanning.
 
 Stops that need a decision rather than a retry: `test-compat` fails on any difference not in
@@ -152,7 +152,7 @@ or a missing apk in `MTR_EXTRA_PKGS`. Send back `make mtr-nightly report`.
 | `repro-build-*` | the second build failed (same causes as `pkg-*`) |
 | `verify-repro-*` | `DIFF` lines: diffoscope HTML in `out/results/diffoscope-<apk>.html`; fix the non-determinism, rebuild the reference too |
 | `image-*` / `images-*` | apko failed: a missing package in `out/repo`, a stale lock (`make images-lock`), a distroless violation message, or key mismatch |
-| `test-image-*`, `test-upgrade-*`, `test-mysqlsh-*` | bats output with `not ok` and the failing step; leftovers: `docker ps -a --filter name=psw-` |
+| `test-image-*`, `test-upgrade-*`, `test-mysqlsh-*`, `test-xtrabackup-*` | bats output with `not ok` and the failing step; leftovers: `docker ps -a --filter name=psw-` |
 | `test-compat-*` and `out/results/compat-*.diff` | a runtime difference from the official image; owner decides on an allowlist entry |
 | `scan-*`, `out/results/cve-*` | a Critical/High finding not covered by VEX (triage order in the supply-chain section) |
 | `sign-*` / `verify-sign-*` | key or registry problem; signing refuses if the committed `keys/cosign.pub` differs from the key dir |
@@ -301,7 +301,58 @@ log tail it printed. Likely first-build issues and their fix:
 - `find_package(libssh)` fails: Wolfi `libssh-dev` lacks the CMake config; report the file list of `libssh-dev`;
 - duplicate `copy_<lib>` target in `cmake/exeutils.cmake`: see `packages/percona-mysql-shell/patches/README.md`.
 
-## Build-path leak scan (percona-server, percona-mysql-shell)
+## Percona XtraBackup (`percona-xtrabackup`)
+
+Needs `percona-server-server` and `percona-server-client` in `out/repo` (test only: the smoke test backs up a
+throwaway mysqld). No source tarballs (git checkout, Boost 1.87.0 is in-tree). Then:
+
+    make pkg-percona-xtrabackup report
+
+What it does: `git-checkout` of `pxb_tag` with submodules (`extra/libkmip`), checks `XB_VERSION` against
+`pxb_version`/`pxb_release`, patches from `packages/percona-xtrabackup/patches/`, CMake with the DEB rules' release
+flags (no LTO) + Ninja, man pages via sphinx-build, install, RPM layout (`/usr/lib64/xtrabackup/plugin` shipped as
+`/usr/lib/xtrabackup/plugin`), split into `percona-xtrabackup` (xtrabackup, xbstream, xbcrypt, xbcloud, xbcloud_osenv,
+bundled libs in `/usr/lib/private`, keyring components), `percona-xtrabackup-test` (`/usr/share/percona-xtrabackup-test-97`)
+and `percona-xtrabackup-dbg`. `melange test` runs `packages/percona-xtrabackup/tests/smoke.sh`: `--version` (version
+and `revision id: <pxb_revision>`), file list, `ldd`, `xbstream -c`/`-x` and `xbcrypt` round trips (byte-identical),
+then against a throwaway Percona Server `xtrabackup --backup` and `--prepare` (both exit 0, `xtrabackup_checkpoints`
+says `full-backuped` / `full-prepared`). Expect 1-2 hours and ~20 GB in the workspace (a full MySQL tree is compiled).
+
+Host checks after the first green build (record results in the task report):
+
+1. `xtrabackup --version` from the apk vs the official image
+   (`docker run --rm --entrypoint xtrabackup <official_pxb_image> --version`): same `9.7.2-2`, `based on MySQL server
+   9.7.2`, and `revision id: 59328573` (8 digits there too?).
+2. The build log: no `UNEXPECTED-PATH` lines (or each explained), no `BUILD-PATH LEAK`, the smoke step
+   "xtrabackup-plugin-dir default" printed `ok` (not the `NOTE:` fallback).
+3. File list vs the official image: `docker run --rm --entrypoint sh <official_pxb_image> -c 'rpm -ql percona-xtrabackup-97'`
+   against `tar -tzf out/repo/x86_64/percona-xtrabackup-9.7.2.2-r0.apk`. Expected differences only: no
+   `xtrabackup-debug`, no `kmip*.h` / `libkmip*.a`, `/usr/lib64` -> `/usr/lib`, man pages not gzipped
+   (docs/deviations.md). Send both lists if anything else differs (e.g. the set of `/usr/lib/private` libs).
+4. Melange's generated dependencies (`tar -xOf out/repo/x86_64/percona-xtrabackup-9.7.2.2-r0.apk .PKGINFO`): no `so:`
+   dependency on a library that only lives in `/usr/lib/private` (libprotobuf*, libabsl_*, libicu*); send the
+   `depend =` lines. Same for `percona-xtrabackup-test` (should only need percona-xtrabackup, percona-server-client, bash).
+5. Reproducibility: after the normal build, once more without ccache into a separate workspace and repo (see
+   "Reproducibility checks"):
+
+       make repro-build PKG=percona-xtrabackup
+
+   The three `percona-xtrabackup*` apk sha256s must match (diffoscope the first mismatching apk only; man pages are
+   sphinx output, so check those first if `percona-xtrabackup` alone differs).
+
+On failure, send back the `make report` tarball plus: the last ~200 lines of `out/logs/pkg-percona-xtrabackup-*.log`;
+the first `CMake Error` block (also `out/workspace/percona-xtrabackup/xb-build/CMakeFiles/CMakeError.log` if present)
+or the first `FAILED:` command with its error; for a test failure the `=== ...` step it stopped at and the log tails
+it printed (mysqld error log, `backup.log` / `prepare.log`). Likely first-build issues and their fix:
+
+- `sphinx-build` fails (Sphinx 9 vs the old `doc/source/conf.py`): send the sphinx error; fallback is
+  `-DWITH_MAN_PAGES=0` plus a deviations row (no man pages);
+- `Cannot find proc/sysinfo.h or libproc2/meminfo.h`: report `apk info -L procps-dev`;
+- the `rev-parse --short HEAD` check in Configure fails: report the value (git safe.directory / abbrev issue);
+- GCC 15 / glibc compile errors: a patch in `packages/percona-xtrabackup/patches/` (header in its README); check
+  first whether the same fix already exists in `packages/percona-server/patches/`.
+
+## Build-path leak scan (percona-server, percona-mysql-shell, percona-xtrabackup)
 
 After install, these recipes run `scripts/check-build-path-leaks.sh` (staged by `melange-build.sh` into the source
 dir as `build-tools/`) over the install tree: any regular file containing the workspace path (`/home/build`) fails the
@@ -318,9 +369,9 @@ recorded config (`--exclude-env-from-recorded-config LEAK_SCAN`), so the apks ar
 default is `LEAK_SCAN=fatal`; never release from a `warn` run: fix or allow-list every reported leak, then rebuild
 without it.
 
-## Hardening baseline (percona-server, percona-mysql-shell)
+## Hardening baseline (percona-server, percona-mysql-shell, percona-xtrabackup)
 
-Both compiled recipes add `hardening_cflags` / `hardening_ldflags` from `versions/9.7.yaml` (ruling R7: stack
+All three compiled recipes add `hardening_cflags` / `hardening_ldflags` from `versions/9.7.yaml` (ruling R7: stack
 protector, stack-clash, CET, `_FORTIFY_SOURCE=2`, `-Werror=format-security`, full RELRO). Configure fails if the flags
 are missing from `CMakeCache.txt`; `melange test` fails (step "hardening") if a shipped binary lacks `GNU_RELRO`,
 `BIND_NOW` or the `__stack_chk_fail` import. A compile error from `-Werror=format-security` or a
@@ -401,13 +452,13 @@ Needs every package in `out/repo` (`make packages`), the signing key's public ha
 images/*.tmpl` as `org.opencontainers.image.revision`; `RELEASE=1` refuses uncommitted changes there). Then:
 
     make registry-up            # registry:2 (pinned) on 127.0.0.1:5000, data in the docker volume ps-wolfi-registry
-    make images report          # percona-server, percona-server-dev
+    make images report          # percona-server, percona-server-dev, percona-xtrabackup
 
 `scripts/apko-build.sh <name>` (one image: `make image-<name>`) renders `images/<name>.apko.yaml.tmpl` to
 `out/rendered/images/<name>.apko.yaml`, locks it (`images/<name>.lock.json`), runs `apko build` (`out/images/<name>/image.tar`
 for `docker load`, SBOMs `out/images/<name>/sbom-{index,x86_64}.spdx.json`) and `apko publish` (host network), and writes the
 index digest to `out/results/<name>.digest`. Tags (`REGISTRY`, default `localhost:5000`; add `BUILD_ID=<n>` for a
-`-<n>` tag): `percona-server:9.7`, `:9.7.2-2`, `percona-server:9.7-dev`, `:9.7.2-2-dev`.
+`-<n>` tag): `percona-server:9.7`, `:9.7.2-2`, `percona-server:9.7-dev`, `:9.7.2-2-dev`, `percona-xtrabackup:9.7`, `:9.7.2-2`.
 
 Lock files: the first run creates `images/*.lock.json` (every package pinned by version and checksum, including
 the Wolfi ones). **Commit them** (`git add images/*.lock.json && git commit -m "chore: image lock files"`); later
@@ -417,7 +468,7 @@ config, so after any change to a template or to `versions/9.7.yaml` values it us
 too: a reproducible rebuild keeps the lock valid, a changed apk needs a relock.
 
 Reproducibility: `make repro-images` (in `phase-b` right after `images`, before the tests, scanning and signing) runs
-`scripts/repro-images.sh`: a second build of both images from the lock files the first build used (`RELOCK` cleared; a lock
+`scripts/repro-images.sh`: a second build of all three from the lock files the first build used (`RELOCK` cleared; a lock
 file that changes fails), with a fresh apko cache and separate output dirs (`out/repro-images/`), published to
 `localhost:5000/repro/...` so the first build's tags, digests and SBOMs stay untouched, then compares each index digest
 with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line must be `OK`. Build date =
@@ -425,7 +476,7 @@ with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line 
 
 Host checks (record in the task report):
 
-1. `make repro-images`: two `OK` lines.
+1. `make repro-images`: three `OK` lines.
 2. Distroless: `apko-build.sh percona-server` did not stop with "must not contain" (a runtime dependency pulling in a
    shell, mysqlsh or the agent) or "is distroless but the image contains" (a shell/apk file in the image). If it did,
    send the lock file's package list and the message.
@@ -443,7 +494,8 @@ Host checks (record in the task report):
    `docker exec ps mysql -uroot -px -e 'select @@version, @@version_comment'` and `docker exec ps mysqlsh --version`.
    Distroless: `docker run --rm -v d:/var/lib/mysql localhost:5000/percona-server:9.7-dev mysqld --initialize-insecure`, then
    `docker run -d -v d:/var/lib/mysql localhost:5000/percona-server:9.7` and connect with the -dev image's client.
-5. Image size vs the official ones (`docker image ls`); SBOMs present in `out/images/*/`.
+5. `docker run --rm localhost:5000/percona-xtrabackup:9.7 xtrabackup --version`.
+6. Image size vs the official ones (`docker image ls`); SBOMs present in `out/images/*/`.
 
 `make registry-down` removes the registry container (the volume keeps the images). The apko cache is
 `out/apko-cache`.
@@ -462,7 +514,7 @@ is the `-dev` image), never from docker; for a ref without a tag (`name@sha256:.
 with `PS_PULL=0` nothing is pulled and the images must already be in the local docker (e.g. `docker load` of
 `out/images/*/image.tar`). A suite whose tests were all skipped fails (`ALL-SKIPPED <suite>` in the log), and each
 suite ends with a `suite <file>: <n> test(s), <k> skipped` line. `make test-image` runs the three server suites below;
-`upgrade` and `mysqlsh` have their own targets.
+`upgrade`, `mysqlsh` and `xtrabackup` have their own targets.
 
 - `server-init.bats`: entrypoint initialisation (root password variants, random password, one-time password,
   `MYSQL_DATABASE`/`USER`, initdb.d `.sql`/`.sql.gz`/`.sh`, missing-password error text, `MYSQL_INIT_ONLY`, `--user 4242:0`).
@@ -500,9 +552,9 @@ for a same-version start fails. If both cases are skipped the suite fails (`ALL-
 tested. Containers and volumes are removed in teardown. The pure helpers
 are unit-tested in `tests/unit/upgrade-lib.bats`.
 
-## mysqlsh tests (`make test-mysqlsh`)
+## mysqlsh and XtraBackup tests (`make test-mysqlsh`, `make test-xtrabackup`)
 
-    make test-mysqlsh IMAGE=localhost:5000/percona-server:9.7-dev report
+    make test-mysqlsh test-xtrabackup IMAGE=localhost:5000/percona-server:9.7-dev PXB_IMAGE=localhost:5000/percona-xtrabackup:9.7 report
 
 `tests/image/mysqlsh.bats` (3 tests, about 10 minutes, docker only): `mysqlsh --js` version, a three-member group
 replication cluster on a dedicated network (`dba.configureInstance`, `createCluster('c')`, `addInstance` x2 with
@@ -511,8 +563,21 @@ replication cluster on a dedicated network (`dba.configureInstance`, `createClus
 --enforce-gtid-consistency=ON --log-bin --log-replica-updates --binlog-format=ROW`, unique `--server-id`, `--report-host`,
 `group_replication.so` loaded; the operator's exact flag set was not confirmed.
 
-Send back `make report` (logs `out/logs/test-mysqlsh-*.log`).
-Helpers with unit tests: `tests/image/gr-lib.bash`, `tests/unit/gr-lib.bats`.
+`tests/image/xtrabackup.bats` (6 tests, about 25-35 minutes): the xtrabackup container mounts the server's datadir volume
+as uid 1001 and shares the server's network namespace (as the operator's sidecar does). Datadirs come from
+`tests/fixtures/make-upgrade-datadir.sh` (InnoDB, RocksDB, keyring-encrypted table), so restored checksums are compared
+with the fixture expectations: backup, prepare in a separate volume, copy-back into an empty volume, start the Wolfi server
+(also `--stream=xbstream --compress=zstd` and `lz4` through extract, decompress, prepare; `xbcloud put/get` against the
+digest-pinned `minio` tool image with credentials generated per run; and two cross tests: Wolfi xtrabackup on an
+official server datadir, official xtrabackup on a Wolfi datadir, both prepare). The cross tests pull `official_ps_image`
+and `official_pxb_image` from `versions/9.7.yaml` (~1 GB each) and pass `--no-server-version-check`. Needs the `minio`
+tool image (`make tools-pull`). Resources are removed in teardown; leftovers show with `docker ps -a --filter name=psw-`.
+
+Send back `make report` (logs `out/logs/test-mysqlsh-*.log`, `out/logs/test-xtrabackup-*.log`). Likely first
+fixes on the host: the keyring-encrypted table needs `--component-keyring-config` (and possibly an `xtrabackup.my`
+manifest next to the binary).
+Helpers with unit tests: `tests/image/gr-lib.bash`, `tests/image/xb-lib.bash`, `tests/unit/gr-lib.bats`,
+`tests/unit/xb-lib.bats`.
 
 ## Compatibility diff against the official image (`make test-compat`)
 
@@ -546,7 +611,7 @@ Needs the images in the registry (`make images`, which also writes `out/results/
 `out/images/<name>/sbom-*.spdx.json`), network for the vulnerability DBs, and the cosign key pair (`make keys`).
 
 - `make scan` runs `scripts/cve-gate.sh <registry>/<repo>@<digest> vex/<image>.openvex.json` for each image
-  (percona-server, percona-server-dev). Both grype (`--fail-on high --vex`) and trivy
+  (percona-server, percona-server-dev, percona-xtrabackup). Both grype (`--fail-on high --vex`) and trivy
   (`--severity CRITICAL,HIGH --exit-code 1 --vex`) run; the gate fails when either finds a Critical/High not covered
   by the image's OpenVEX file. Reports: `out/results/cve-<image>-{grype,trivy}.json`. The scanners pull the image from
   the plain-HTTP registry (`--network host`, grype `GRYPE_REGISTRY_INSECURE_USE_HTTP`, trivy `--insecure`).
@@ -565,7 +630,7 @@ Triage of a Critical/High finding (the order matters):
 
 1. Fixable by bumping the component or unbundling it (V8, protobuf, ICU, libevent, editline, fido): change the recipe
    flag or version, add a row to `docs/deviations.md`, rebuild the packages and images, and re-run the image tests
-   (`make test-image test-upgrade test-mysqlsh`), then scan again.
+   (`make test-image test-upgrade test-mysqlsh test-xtrabackup`), then scan again.
 2. Genuinely not applicable (the vulnerable code is not reachable or not shipped): write an OpenVEX statement
    (`status: not_affected` with a `justification`) in `vex/<image>.openvex.json` as a draft, and **get the project
    owner's approval before committing it**. VEX is never used to silence a fixable finding. Keep the fixed
@@ -594,17 +659,17 @@ Before and during phase A:
   once every reported leak is fixed or allow-listed. `make phase-a`: all packages built, `melange test` green, no `UNEXPECTED-PATH`, `BUILD-PATH LEAK` or `CMD-DEP`
   lines; the `SCRIPT (moved into percona-server-scripts)` lines of `pkg-percona-server-*.log` reviewed.
 - [ ] Host checks of each component section recorded: `mysqld --version` says `Release 2, Revision 91438a04`; mysqlsh
-  `NEEDED [libjitexecutor.so]` and the `--js print(1+1)` smoke test passed;
+  `NEEDED [libjitexecutor.so]` and the `--js print(1+1)` smoke test passed; xtrabackup file list vs the official image;
   generated `.PKGINFO` dependencies reviewed.
 - [ ] `make verify-repro` prints only `OK` (including `v8-dev`); every `DIFF` explained by its diffoscope report and fixed.
 
 Phase B:
 
 - [ ] `make phase-b`; then **commit `images/*.lock.json`** created by the first `make images` (Images). Its
-  `repro-images` step printed two `OK` lines.
+  `repro-images` step printed three `OK` lines.
 - [ ] Hard pass/fail from the Images section: the edited `/etc/my.cnf` wins over the RPM copy (both commands print
   `PASS`); distroless build did not stop with a "must not contain" message.
-- [ ] `make test-image test-upgrade test-mysqlsh` green; no `ALL-SKIPPED` line; skipped upgrade cases (server refuses the jump)
+- [ ] `make test-image test-upgrade test-mysqlsh test-xtrabackup` green; no `ALL-SKIPPED` line; skipped upgrade cases (server refuses the jump)
   reviewed.
 - [ ] `make test-compat` PASS. **Owner approval required** for every `tests/compat/allowlist.yaml` entry (including
   uncommenting the "candidates for owner approval" block).

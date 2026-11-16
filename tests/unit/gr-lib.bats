@@ -6,14 +6,6 @@ setup() {
   source "$ROOT/tests/image/gr-lib.bash"
 }
 
-@test "rand_secret: requested length, hex only, different each time" {
-  a=$(rand_secret 32)
-  b=$(rand_secret 32)
-  [ "${#a}" -eq 32 ]
-  [[ $a =~ ^[0-9a-f]+$ ]]
-  [ "$a" != "$b" ]
-}
-
 @test "gr_mysqld_args: unique id, report host, gtid options" {
   run gr_mysqld_args 2 host-b
   [ "$status" -eq 0 ]

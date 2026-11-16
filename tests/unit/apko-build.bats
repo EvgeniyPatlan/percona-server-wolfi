@@ -4,7 +4,7 @@ setup() {
   ROOT=$(cd "$BATS_TEST_DIRNAME/../.." && pwd)
   TMP=$BATS_TEST_TMPDIR
   mkdir -p "$TMP/img" "$TMP/kd"
-  for n in percona-server percona-server-dev; do
+  for n in percona-server percona-server-dev percona-xtrabackup; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -83,6 +83,16 @@ STUB
   [[ $line == *"localhost:5000/percona-server:9.7 "* ]]
   [[ $line == *"localhost:5000/percona-server:$ver-$rel"* ]]
   run bash -c "grep -o 'percona-server:[^ ]*' <<<'$line' | grep -q -- -dev"; [ "$status" -ne 0 ]   # no -dev tag
+}
+
+@test "xtrabackup image is tagged with the xtrabackup version" {
+  BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" percona-xtrabackup
+  [ "$status" -eq 0 ]
+  v=$(grep '^pxb_version:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)-$(grep '^pxb_release:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  line=$(grep -E -- ' publish ' "$TMP/calls")
+  [[ $line == *"localhost:5000/percona-xtrabackup:9.7 "* ]]
+  [[ $line == *"localhost:5000/percona-xtrabackup:$v "* ]]
+  [[ $line == *"localhost:5000/percona-xtrabackup:$v-7"* ]]
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -221,6 +231,14 @@ mkgit_img() {
     [ "$status" -ne 0 ]
     [[ $output == *"$p"* ]]
   done
+  for p in percona-mysql-shell percona-telemetry-agent; do
+    rm -f "$TMP/img/percona-xtrabackup.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-xtrabackup
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-server-dev.lock.json"
+  LOCK_PKGS='{"name":"percona-xtrabackup-docker-scripts"}' run "$ROOT/scripts/apko-build.sh" percona-server-dev
+  [ "$status" -ne 0 ]
   rm -f "$TMP/img/percona-server-dev.lock.json"
   LOCK_PKGS='{"name":"percona-mysql-shell"},{"name":"percona-telemetry-agent"},{"name":"percona-server-docker-scripts"}' \
     run "$ROOT/scripts/apko-build.sh" percona-server-dev

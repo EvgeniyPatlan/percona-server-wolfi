@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # build.sh [options] [image...]: build the apks and the images, skipping whatever is already up to date.
-# Images: percona-server (distroless) and/or percona-server-dev (default: both). Only the packages the chosen images
-# need are built: the distroless image does not need percona-mysql-shell or percona-telemetry-agent.
+# Images: percona-server (distroless), percona-server-dev, percona-xtrabackup (default: all three). Only the packages
+# the chosen images need are built: the distroless image does not need percona-mysql-shell or percona-telemetry-agent,
+# the xtrabackup image needs percona-server (libs, client) but not the -dev extras.
 #
 # A package is rebuilt when its main apk is missing from out/repo, when it has never been built by this script, or when
 # its inputs changed since the last successful build: the rendered recipe (so every pin of the version file it uses),
@@ -26,19 +27,23 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/common.sh"
 cd "$here/.."
 
-usage() { die "usage: build.sh [-n|--dry-run] [-f|--force] [--packages-only|--images-only] [--dev-keys] [percona-server] [percona-server-dev]"; }
+usage() { die "usage: build.sh [-n|--dry-run] [-f|--force] [--packages-only|--images-only] [--dev-keys] [percona-server] [percona-server-dev] [percona-xtrabackup]"; }
 
 # Build order (mk/packages.mk PACKAGES; tests/unit/build.bats checks they agree) and the local packages each one is
 # built against.
-ORDER=(mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-telemetry-agent percona-server-docker-scripts)
+ORDER=(mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtrabackup percona-telemetry-agent percona-server-docker-scripts percona-xtrabackup-docker-scripts)
 declare -A DEPS=(
   [mecab]="" [mecab-ipadic]="mecab" [v8]="" [percona-server]="mecab mecab-ipadic v8"
-  [percona-mysql-shell]="percona-server" [percona-telemetry-agent]="" [percona-server-docker-scripts]="percona-server"
+  [percona-mysql-shell]="percona-server" [percona-xtrabackup]="percona-server" [percona-telemetry-agent]=""
+  [percona-server-docker-scripts]="percona-server" [percona-xtrabackup-docker-scripts]=""
 )
 declare -A IMAGE_PKGS=(
   [percona-server]="mecab mecab-ipadic v8 percona-server percona-server-docker-scripts"
-  [percona-server-dev]="${ORDER[*]}"
+  [percona-server-dev]="mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-telemetry-agent percona-server-docker-scripts"
+  [percona-xtrabackup]="mecab mecab-ipadic v8 percona-server percona-xtrabackup percona-xtrabackup-docker-scripts"
 )
+# registry repository of each image (the -dev image is a tag of percona-server)
+declare -A IMAGE_REPO=([percona-server]=percona-server [percona-server-dev]=percona-server [percona-xtrabackup]=percona-xtrabackup)
 
 dry=0 force=0 do_pkgs=1 do_images=1
 images=()
@@ -49,14 +54,14 @@ while (($#)); do
     --packages-only) do_images=0 ;;
     --images-only) do_pkgs=0 ;;
     --dev-keys) export KEY_DIR=$HOME/.config/ps-wolfi-dev ;;
-    -h | --help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    percona-server | percona-server-dev) images+=("$1") ;;
+    -h | --help) sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    percona-server | percona-server-dev | percona-xtrabackup) images+=("$1") ;;
     *) usage ;;
   esac
   shift
 done
 ((do_pkgs || do_images)) || die "--packages-only and --images-only exclude each other"
-((${#images[@]})) || images=(percona-server percona-server-dev)
+((${#images[@]})) || images=(percona-server percona-server-dev percona-xtrabackup)
 
 # shellcheck source=lib/keys.sh
 . "$here/lib/keys.sh"
@@ -131,10 +136,10 @@ image_inputs() {
   } | sha
 }
 
-in_registry() { # <digest>: both images live in the percona-server repository of the registry
+in_registry() { # <image> <digest>
   "$curl_cmd" -sf -o /dev/null -I \
     -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
-    "http://$registry/v2/percona-server/manifests/$1"
+    "http://$registry/v2/${IMAGE_REPO[$1]}/manifests/$2"
 }
 
 run_make() {
@@ -183,7 +188,7 @@ if ((do_images)); then
     elif ! why=$(lock_matches "$lock"); then reason="lock file stale ($why): re-locking"; relock=1
     elif ((force)); then reason="--force"
     elif [[ ! -s $digest_file ]]; then reason="no $digest_file"
-    elif ! in_registry "$(head -n1 "$digest_file")"; then reason="digest not in $registry"
+    elif ! in_registry "$i" "$(head -n1 "$digest_file")"; then reason="digest not in $registry"
     elif [[ ! -s $stamps/image-$i ]]; then reason="never built by build.sh"
     elif [[ $(cat "$stamps/image-$i") != "$(image_inputs "$i")" ]]; then reason="inputs changed"
     fi

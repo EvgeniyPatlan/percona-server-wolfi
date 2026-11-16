@@ -2,13 +2,6 @@
 # Group replication helpers for tests/image/mysqlsh.bats. Sourced with `load gr-lib` after `load helpers`.
 # Pure functions (no docker), unit-tested in tests/unit/gr-lib.bats.
 
-# rand_secret [n=24]: n random hex characters (credentials are generated at test time, never committed).
-rand_secret() {
-  local n=${1:-24} s
-  s=$(head -c "$n" /dev/urandom | od -An -tx1 | tr -d ' \n')
-  printf '%s\n' "${s:0:n}"
-}
-
 # gr_mysqld_args <server-id> <report-host>: mysqld options (one per line) for a group replication member.
 # Minimal correct set (the operator's exact flags were not confirmed): GTIDs on and enforced, row binary log with
 # replica updates, a unique server id, report_host so the members find each other by name, and the plugin loaded.

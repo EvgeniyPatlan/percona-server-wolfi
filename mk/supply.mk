@@ -4,7 +4,7 @@
 .PHONY: scan sign verify-sign $(addprefix scan-,$(IMAGES))
 
 # repo of an image name: the -dev image lives in the percona-server repository
-image_repo = percona-server
+image_repo = $(if $(filter percona-xtrabackup,$(1)),percona-xtrabackup,percona-server)
 
 # All images are scanned even if one fails; the gate fails at the end.
 scan:

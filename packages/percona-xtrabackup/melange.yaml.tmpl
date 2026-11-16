@@ -1,0 +1,284 @@
+package:
+  name: percona-xtrabackup
+  # apk versions cannot contain "-": 9.7.2-2 becomes 9.7.2.2 (same convention as percona-server)
+  version: "@@pxb_version@@.@@pxb_release@@"
+  epoch: 0
+  description: Percona XtraBackup @@pxb_version@@-@@pxb_release@@ (xtrabackup, xbstream, xbcloud, xbcloud_osenv, xbcrypt)
+  copyright:
+    - license: GPL-2.0-only
+  dependencies:
+    runtime:
+      # DEB Depends / RPM Requires (rsync for --rsync, zstd and lz4 for the (de)compression helpers); bash runs
+      # xbcloud_osenv (#!/bin/bash)
+      - rsync
+      - zstd
+      - lz4
+      - bash
+
+# CMake flags follow Percona's DEB build (storage/innobase/xtrabackup/utils/debian/rules @ pxb_tag, release tree,
+# verbatim; the rpm spec has the same flags): system OpenSSL, bundled zlib/zstd/protobuf, every other library at
+# the CMake default, no LTO (neither DEB nor RPM sets WITH_LTO; the default is OFF). Boost 1.87.0 is in-tree
+# (extra/boost/boost_1_87_0; cmake/boost.cmake always uses it), so -DDOWNLOAD_BOOST=1 -DWITH_BOOST=libboost are
+# inert and nothing is downloaded. File placement follows the RPM layout of the official percona/percona-xtrabackup
+# image (rpm spec %files): plugin dir /usr/lib64/xtrabackup/plugin and socket /var/lib/mysql/mysql.sock are the
+# RPM values; files are shipped under /usr/lib (Wolfi merged /usr, see percona-server). See docs/deviations.md.
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - linux-headers
+      - cmake
+      - ninja-build
+      - ccache
+      - bison
+      - perl
+      - pkgconf
+      - patch
+      # cmake/mysql_version.cmake takes the "revision id" from `git rev-parse --short HEAD`
+      - git
+      # xxd (DEB build-dep vim-common)
+      - vim
+      # man pages: -DWITH_MAN_PAGES=1 runs sphinx-build (DEB build-dep python3-sphinx)
+      - py@@pxb_sphinx_python@@-sphinx
+      - py@@pxb_sphinx_python@@-sphinx-bin
+      # DEB Build-Depends (system libraries): libssl-dev libaio-dev libncurses-dev libgcrypt-dev libev-dev
+      # libcurl-dev libsasl2-dev; libz-dev is only a header dependency here (zlib is bundled)
+      - openssl-dev~3.6   # MySQL 9.7 supports OpenSSL 1.1/3.x; Wolfi openssl-dev is 4.0 (docs/deviations.md)
+      - libaio-dev
+      - ncurses-dev
+      - libgcrypt-dev
+      - libev-dev
+      - cyrus-sasl-mit-dev
+      - zlib-dev
+      # Percona's builder for the DEB/RPM build hosts adds: libproc2-dev/procps-ng-devel (cmake/procps.cmake is
+      # mandatory), libudev-dev (bundled libfido2), libtirpc-dev (glibc has no SunRPC)
+      - procps-dev
+      - libudev-dev
+      - libtirpc-dev
+      - rpcsvc-proto
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/percona-xtrabackup
+      tag: "@@pxb_tag@@"
+      expected-commit: "@@pxb_commit@@"
+      recurse-submodules: true
+      destination: xb-src
+
+  - name: Check source version and apply patches
+    runs: |
+      export LC_ALL=C
+      # XB_VERSION at the pinned commit must be the version this recipe is named after
+      v=$(awk -F= '/^XB_VERSION_(MAJOR|MINOR|PATCH)=/ { printf "%s%s", sep, $2; sep = "." }' xb-src/XB_VERSION)
+      e=$(sed -n 's/^XB_VERSION_EXTRA=//p' xb-src/XB_VERSION)
+      test "$v$e" = "@@pxb_version@@-@@pxb_release@@" ||
+        { echo "xb-src/XB_VERSION is $v$e, expected @@pxb_version@@-@@pxb_release@@" >&2; exit 1; }
+      # Boost is in-tree (no download)
+      test -d xb-src/extra/boost/boost_1_87_0
+      grep -q 'SET(BOOST_PACKAGE_NAME "boost_1_87_0")' xb-src/cmake/boost.cmake
+      n=0
+      for p in patches/*.patch; do
+        [ -e "$p" ] || continue
+        echo "applying $p"
+        patch -d xb-src -p1 --forward --no-backup-if-mismatch < "$p"
+        n=$((n + 1))
+      done
+      echo "applied $n patch(es)"
+
+  - name: Configure
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      export PYTHONDONTWRITEBYTECODE=1
+      top=$(pwd)
+      # "revision id" = `git rev-parse --short HEAD`, whose length depends on the clone's object count; pin it to
+      # 8 digits (what Percona's tarball builds report) and make sure git accepts the checkout's owner. Passed as
+      # environment config (git >= 2.31) so cmake's own `git rev-parse` sees it and no config file is written.
+      export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$top/xb-src" \
+        GIT_CONFIG_KEY_1=core.abbrev GIT_CONFIG_VALUE_1=8
+      test "$(git -C xb-src rev-parse --short HEAD)" = "@@pxb_revision@@"
+      # Same reproducibility launcher as percona-server: per-object -frandom-seed=<output path>, ccache when
+      # CCACHE_DIR is set; the workspace path is mapped away with -ffile-prefix-map. Non-semantic.
+      cat > "$top/cc-launcher" <<'SH'
+      #!/bin/sh
+      out= prev=
+      for a in "$@"; do
+        [ "$prev" = "-o" ] && out=$a
+        prev=$a
+      done
+      cc=$1
+      shift
+      if [ -n "$out" ]; then set -- "-frandom-seed=$out" "$@"; fi
+      if [ -n "${CCACHE_DIR:-}" ] && command -v ccache >/dev/null 2>&1; then exec ccache "$cc" "$@"; fi
+      exec "$cc" "$@"
+      SH
+      chmod +x "$top/cc-launcher"
+      # The DEB rules set no compiler flags; melange's default flags are replaced (as in percona-server) by the
+      # shared hardening baseline (hardening_cflags / hardening_ldflags, ruling R7) plus the path map.
+      export CFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=." CXXFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=."
+      export CPPFLAGS="" LDFLAGS="@@hardening_ldflags@@"
+      # DEB rules release configure, verbatim, except: MYSQL_UNIX_ADDR and INSTALL_PLUGINDIR take the RPM spec
+      # values (the official image is RPM-built); Ninja + launcher + CMAKE_POLICY_VERSION_MINIMUM (CMake 4.x).
+      # /usr/bin compilers, not Wolfi's /usr/local/bin openssf wrappers (build-base -> openssf-compiler-options): the
+      # wrappers add -specs openssf.spec (_GLIBCXX_ASSERTIONS, -fno-strict-aliasing, ... - not the R7 flag set) and
+      # break under ccache, which resolves the symlink and runs the wrapper as "gcc-wrapper".
+      cmake -S xb-src -B xb-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DBUILD_CONFIG=xtrabackup_release -DCMAKE_INSTALL_PREFIX=/usr \
+        -DWITH_SSL=system -DINSTALL_MYSQLTESTDIR=/usr/share/percona-xtrabackup-test-97 \
+        -DINSTALL_MANDIR=/usr/share/man -DWITH_MAN_PAGES=1 -DMINIMAL_RELWITHDEBINFO=OFF \
+        -DDOWNLOAD_BOOST=1 -DWITH_BOOST=libboost -DMYSQL_UNIX_ADDR=/var/lib/mysql/mysql.sock \
+        -DINSTALL_PLUGINDIR=lib64/xtrabackup/plugin -DFORCE_INSOURCE_BUILD=1 \
+        -DWITH_ZLIB=bundled -DWITH_ZSTD=bundled -DWITH_PROTOBUF=bundled -DWITH_CURL=bundled \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_CXX_COMPILER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_C_LINKER_LAUNCHER="$top/cc-launcher" \
+        -DCMAKE_CXX_LINKER_LAUNCHER="$top/cc-launcher"
+      # DEB leaves CMAKE_BUILD_TYPE unset: MySQL's CMakeLists then picks RelWithDebInfo; LTO stays off
+      grep -q '^CMAKE_BUILD_TYPE:[A-Z]*=RelWithDebInfo$' xb-build/CMakeCache.txt
+      grep -q '^WITH_LTO:BOOL=OFF$' xb-build/CMakeCache.txt
+      grep -q '^WITH_CURL:STRING=bundled$' xb-build/CMakeCache.txt
+      grep -Eq 'define OPENSSL_VERSION_MAJOR +3$' /usr/include/openssl/opensslv.h
+      h=xb-build/storage/innobase/xtrabackup/src/xtrabackup_version.h
+      grep -Eq '^#define XTRABACKUP_VERSION[[:space:]]+"@@pxb_version@@-@@pxb_release@@"' "$h"
+      grep -Eq '^#define XTRABACKUP_REVISION[[:space:]]+"@@pxb_revision@@"' "$h"
+      # hardening baseline reached the cache: compile flags and every link type (LTO links use the same link
+      # lines). CXX/EXE/SHARED are required; C/MODULE are checked when the project defines them.
+      c=xb-build/CMakeCache.txt
+      grep -q '^CMAKE_CXX_FLAGS:STRING=.*-fstack-clash-protection' "$c"
+      grep -q '^CMAKE_EXE_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      grep -q '^CMAKE_SHARED_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      if grep -q '^CMAKE_C_FLAGS:' "$c"; then grep -q '^CMAKE_C_FLAGS:STRING=.*-fstack-clash-protection' "$c"; fi
+      if grep -q '^CMAKE_MODULE_LINKER_FLAGS:' "$c"; then grep -q '^CMAKE_MODULE_LINKER_FLAGS:STRING=.*-z,now' "$c"; fi
+
+  - name: Build
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@ PYTHONDONTWRITEBYTECODE=1
+      /usr/lib/ninja-build/bin/ninja -C xb-build -j"$(nproc)"
+      if command -v ccache >/dev/null 2>&1 && [ -n "${CCACHE_DIR:-}" ]; then ccache --show-stats || true; fi
+
+  - name: Install
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@ PYTHONDONTWRITEBYTECODE=1
+      DESTDIR="${{targets.destdir}}" cmake --install xb-build
+
+  - name: Wolfi layout and RPM %install
+    runs: |
+      d="${{targets.destdir}}"
+      # merged /usr: /usr/lib64 and /usr/sbin are symlinks on Wolfi (wolfi-baselayout), ship the real directories
+      for pair in usr/sbin:usr/bin usr/lib64:usr/lib; do
+        from=${pair%%:*} to=${pair#*:}
+        if [ -d "$d/$from" ]; then
+          mkdir -p "$d/$to"
+          cp -a "$d/$from/." "$d/$to/"
+          rm -rf "${d:?}/$from"
+        fi
+      done
+      # RPM spec %install removals, plus the libkmip static libraries/headers (development files only; the
+      # percona-server package drops them too) and the build-host dependent INFO_BIN/INFO_SRC
+      rm -rf "$d/usr/lib/libmysqlservices.a" "$d/usr/docs" "$d/usr/share/man/man8" \
+        "$d"/usr/share/man/man1/c* "$d"/usr/share/man/man1/m* "$d"/usr/share/man/man1/i* \
+        "$d"/usr/share/man/man1/l* "$d"/usr/share/man/man1/p* "$d"/usr/share/man/man1/z* \
+        "$d"/usr/include/kmip*.h "$d"/usr/lib/libkmip*.a
+      rmdir "$d/usr/include" 2>/dev/null || true
+      find "$d" \( -name 'INFO_BIN*' -o -name 'INFO_SRC*' \) -exec rm -f {} +
+      install -Dm0644 xb-src/LICENSE "$d/usr/share/licenses/percona-xtrabackup/LICENSE"
+      # the RPM %files set (binaries, private bundled libs, keyring components)
+      for b in xtrabackup xbstream xbcrypt xbcloud xbcloud_osenv; do test -x "$d/usr/bin/$b"; done
+      for p in component_keyring_file component_keyring_vault component_keyring_kms component_keyring_kmip; do
+        test -f "$d/usr/lib/xtrabackup/plugin/$p.so"
+      done
+      ls "$d"/usr/lib/private/libprotobuf-lite.so.*
+      test -d "$d/usr/share/percona-xtrabackup-test-97"
+      # built binary reports the pinned version and revision
+      ver=$("$d/usr/bin/xtrabackup" --version 2>&1)
+      echo "$ver"
+      echo "$ver" | grep -q 'version @@pxb_version@@-@@pxb_release@@ .*revision id: @@pxb_revision@@'
+      # every installed path outside the RPM %files set is listed for review (and still shipped)
+      expected='^(usr/bin/(xtrabackup|xbstream|xbcrypt|xbcloud|xbcloud_osenv)|usr/lib/private|usr/lib/xtrabackup/plugin|usr/share/man/man1|usr/share/percona-xtrabackup-test-97|usr/share/licenses/percona-xtrabackup)(/|$)'
+      (cd "$d" && find . -mindepth 1 \( -type f -o -type l \) | sed 's#^\./##' | LC_ALL=C sort) |
+        grep -Ev "$expected" | sed 's/^/UNEXPECTED-PATH (shipped in percona-xtrabackup): /' || true
+      # no Python bytecode (sphinx and the test tree are the only Python around)
+      pyc=$(cd "$d" && find . \( -name '*.py[co]' -o -name __pycache__ \) | LC_ALL=C sort)
+      if [ -n "$pyc" ]; then echo "Python bytecode in the install tree:" >&2; echo "$pyc" >&2; exit 1; fi
+
+  - name: Build-path leak scan
+    runs: |
+      # No installed file may embed the workspace path (build-path independence). build-path-allowlist (optional,
+      # next to this recipe) lists justified exceptions; scripts/melange-build.sh stages the checker as build-tools/.
+      allow=
+      if [ -f build-path-allowlist ]; then allow=build-path-allowlist; fi
+      # LEAK_SCAN=warn (from `LEAK_SCAN=warn make ...`, via melange-build.sh --env-file): report only, do not fail
+      # /home/build/csu: Wolfi's glibc is built in /home/build too; its crt objects' debug info names that path in every
+      # linked binary (not from this build, constant across hosts, stripped into -dbg by split/debug).
+      LEAK_IGNORE="$(pwd)/csu" LEAK_SCAN="${LEAK_SCAN:-fatal}" bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)" $allow
+  # No `uses: strip` here: percona-xtrabackup-dbg (first subpackage) runs split/debug over the whole tree.
+
+subpackages:
+  # Order matters: -dbg must run first (it sees every ELF object, including any in the test tree).
+  - name: percona-xtrabackup-dbg
+    description: Debug symbols for percona-xtrabackup
+    pipeline:
+      - uses: split/debug
+    options:
+      no-depends: true
+
+  - name: percona-xtrabackup-test
+    description: Percona XtraBackup test suite (storage/innobase/xtrabackup/test) as installed by the RPM/DEB -test package
+    dependencies:
+      runtime:
+        # DEB Depends mysql-client / RPM Requires /usr/bin/mysql
+        - percona-xtrabackup=${{package.full-version}}
+        - percona-server-client
+        - bash
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/usr/share"
+          mv "$d/usr/share/percona-xtrabackup-test-97" "$s/usr/share/"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - posix-libc-utils
+        - percona-xtrabackup
+        - percona-xtrabackup-test
+        # throwaway mysqld for --backup / --prepare (local repo, packages/percona-server)
+        - percona-server-server
+        - percona-server-client
+        # readelf for the hardening step
+        - binutils
+  pipeline:
+    - name: smoke test (tests/smoke.sh)
+      runs: |
+        # tests/smoke.sh reaches the test workspace through the staged --source-dir (scripts/melange-build.sh)
+        test -f tests/smoke.sh || { echo "tests/smoke.sh missing from the test workspace (staged source dir)" >&2; exit 1; }
+        PXB_VERSION="@@pxb_version@@-@@pxb_release@@" PXB_REVISION="@@pxb_revision@@" bash tests/smoke.sh
+    - name: hardening (RELRO, BIND_NOW, stack protector)
+      runs: |
+        # ruling R7 baseline: full RELRO (-z relro -z now) and -fstack-protector-strong in shipped binaries
+        for f in /usr/bin/xtrabackup /usr/bin/xbcloud; do
+          readelf -lW "$f" | grep -q GNU_RELRO || { echo "$f: no GNU_RELRO segment" >&2; exit 1; }
+          readelf -dW "$f" | grep -Eq '\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' || { echo "$f: neither DT_FLAGS BIND_NOW nor DT_FLAGS_1 NOW" >&2; exit 1; }
+          readelf --dyn-syms -W "$f" | grep __stack_chk_fail >/dev/null || { echo "$f: no __stack_chk_fail import" >&2; exit 1; }
+          echo "ok: $f (RELRO, BIND_NOW, stack protector)"
+        done
+
+update:
+  enabled: false

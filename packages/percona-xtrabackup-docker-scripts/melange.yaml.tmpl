@@ -1,0 +1,86 @@
+package:
+  name: percona-xtrabackup-docker-scripts
+  version: "@@pxb_version@@.@@pxb_release@@"
+  epoch: 0
+  description: Entrypoint and docker glue of the official percona/percona-xtrabackup 9.x image (percona-docker at a pinned commit, unpatched)
+  copyright:
+    - license: GPL-2.0-only
+  # /call-home.sh is also shipped by percona-telemetry-agent (same file); the two images never co-install them.
+  dependencies:
+    runtime:
+      - bash
+      - busybox
+      - curl
+      - ca-certificates-bundle
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+
+pipeline:
+  # call-home.sh, exactly as the official Dockerfile fetches it (same sha256)
+  - uses: fetch
+    with:
+      uri: @@call_home_url@@
+      expected-sha256: @@call_home_sha256@@
+      strip-components: 1
+
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # pxb-entry.sh needs no Wolfi change (bash + exec only). Ownership mirrors the Dockerfile (mysql = 1001).
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      install -Dm0755 pd-src/percona-xtrabackup-9.x/pxb-entry.sh "$d/docker-entrypoint.sh"
+      install -Dm0755 call-home.sh "$d/call-home.sh"
+      install -d -m0775 "$d/backup"
+      install -d -m0755 "$d/usr/local/percona"
+      chown 1001:0 "$d/backup"
+      chown 1001:1001 "$d/usr/local/percona"
+      install -Dm0644 pd-src/percona-xtrabackup-9.x/LICENSE "$d/licenses/LICENSE.Dockerfile"
+      # `melange test` installs without applying owners/modes, so ownership is asserted here, on the tree
+      # that becomes the apk (the apk tar headers were also checked by hand: numeric 1001 is preserved).
+      test "$(stat -c '%u:%g %a' "$d/backup")" = "1001:0 775"
+      test "$(stat -c '%u:%g' "$d/usr/local/percona")" = 1001:1001
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - percona-xtrabackup-docker-scripts
+  pipeline:
+    - name: scripts and dirs
+      runs: |
+        bash -n /docker-entrypoint.sh
+        bash -n /call-home.sh
+        test -x /docker-entrypoint.sh
+        test -x /call-home.sh
+        grep -q 'PRODUCT_FAMILY_PXB' /docker-entrypoint.sh
+        test -d /backup
+        test -d /usr/local/percona
+
+update:
+  enabled: false

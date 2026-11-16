@@ -32,6 +32,13 @@ test-upgrade: $(BATS)
 test-mysqlsh: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/mysqlsh.bats)
 
+# XtraBackup image: backup/prepare/copy-back, zstd/lz4 streams, xbcloud against MinIO, cross tests with the official
+# images (pulls official_ps_image and official_pxb_image of the version file; see docs/BUILD-HOST.md).
+PXB_IMAGE ?= $(REGISTRY)/percona-xtrabackup:9.7
+.PHONY: test-xtrabackup
+test-xtrabackup: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) PXB_IMAGE=$(PXB_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/xtrabackup.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).

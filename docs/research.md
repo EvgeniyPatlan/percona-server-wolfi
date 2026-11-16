@@ -1,8 +1,7 @@
 # Research: pins for the PS 9.7 Wolfi build
 
 > **Historical document.** Written for the original combined project (Percona Server, MySQL Shell and Percona
-> XtraBackup). This repository builds Percona Server and its two images only; the XtraBackup parts (recipes, image,
-> tests, `pxb_*` pins) were not carried over. Sections on them are kept for the record.
+> XtraBackup), which this repository continues; current state: README.md, docs/BUILD-HOST.md, docs/roadmap.md.
 
 Date: 2026-11-13. All values are in `versions/9.7.yaml` / `versions/tools.yaml`.
 "Official image" = `percona/percona-server:9.7` as of 2026-11-13.

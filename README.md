@@ -1,12 +1,13 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
-Builds Percona Server for MySQL 9.7 from source as Wolfi apk packages (melange) and assembles two container images
-from them (apko). Not an official Percona image.
+Builds Percona Server for MySQL 9.7 and Percona XtraBackup 9.7 from source as Wolfi apk packages (melange) and
+assembles three container images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
 | `percona-server:9.7` | Distroless: `ENTRYPOINT /usr/sbin/mysqld`, no shell, no package manager, no interpreters. |
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
+| `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
 
 ## Packages
 
@@ -18,8 +19,10 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `v8` | V8 for the JavaScript stored-program component (`percona-server-js`) |
 | `percona-server` | The server; subpackages `-server`, `-client`, `-libs`, `-rocksdb`, `-js`, `-scripts`, `-dev`, `-test`, `-icu-data-files` |
 | `percona-mysql-shell` | MySQL Shell, `-dev` image only |
+| `percona-xtrabackup` | XtraBackup (`xtrabackup`, `xbstream`, `xbcrypt`, `xbcloud`); subpackages `-test`, `-dbg` |
 | `percona-telemetry-agent` | Percona telemetry agent, `-dev` image only (as in the official image) |
-| `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both images |
+| `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
+| `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -39,8 +42,9 @@ template or lock file changed or its digest is not in the registry. It re-locks 
 matches the apks (commit the rewritten lock file).
 
     scripts/build.sh -n                       # show the plan: BUILD/SKIP for each package and image, with the reason
-    scripts/build.sh                          # build what is needed for both images
+    scripts/build.sh                          # build what is needed for all three images
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
+    scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -50,8 +54,8 @@ still go through `make all`.
 Quick checks without docker builds: `make lint test-unit`.
 
 Differences from the official image and from Percona's DEB/RPM builds, each with its reason: `docs/deviations.md`.
-Design and its decisions: `docs/design.md`; pins and their sources: `docs/research.md`; what to build next (XtraBackup,
-MySQL Router, the rest of the operator stacks): `docs/roadmap.md`.
+Design and its decisions: `docs/design.md`; pins and their sources: `docs/research.md`; what to build next (MySQL
+Router, the rest of the operator stacks): `docs/roadmap.md`.
 
 ## Running the images
 
@@ -142,6 +146,34 @@ Mount the PVC at `/var/lib/mysql` and run as the image user:
 
 For the Percona Operator for MySQL use `:9.7-dev` (the operator calls `mysqlsh` and the entrypoint).
 
+### `percona-xtrabackup:9.7`: backup and restore
+
+    XB=localhost:5000/percona-xtrabackup:9.7
+
+The XtraBackup container needs the server's datadir and its network (as the operator's sidecar has); it runs as uid
+1001 like the server. With the server from above running as `ps`:
+
+    # full backup into the volume ps-backup, then prepare it
+    docker run --rm --volumes-from ps --network container:ps -v ps-backup:/backup $XB \
+      xtrabackup --backup --target-dir=/backup/full --user=root --password=secret --host=127.0.0.1
+    docker run --rm -v ps-backup:/backup $XB xtrabackup --prepare --target-dir=/backup/full
+
+    # restore into a new volume (owned by uid 1001 first: the image has no /var/lib/mysql to take the owner from)
+    docker run --rm --user 0 -v ps-restored:/var/lib/mysql --entrypoint chown $XB 1001:0 /var/lib/mysql
+    docker run --rm -v ps-backup:/backup -v ps-restored:/var/lib/mysql $XB \
+      xtrabackup --copy-back --target-dir=/backup/full --datadir=/var/lib/mysql
+    docker run -d --name ps-restored -v ps-restored:/var/lib/mysql $IMAGE:9.7
+
+Streamed and compressed (`--target-dir` is still required with `--stream`):
+
+    docker run --rm --volumes-from ps --network container:ps -v ps-backup:/backup $XB sh -c \
+      'xtrabackup --backup --stream=xbstream --compress=zstd --target-dir=/tmp \
+         --user=root --password=secret --host=127.0.0.1 > /backup/full.xbs'
+    docker run --rm -v ps-backup:/backup $XB sh -c 'mkdir /backup/x && xbstream -x -C /backup/x < /backup/full.xbs &&
+      xtrabackup --decompress --remove-original --target-dir=/backup/x && xtrabackup --prepare --target-dir=/backup/x'
+
+`xbcloud` (in the image) puts and gets backups on S3, GCS and Azure directly; the operator uses it that way.
+
 ## Official image vs this build
 
 Measured on 2026-11-16 against `percona/percona-server:9.7` (9.7.2-3.1, pinned by digest as `official_ps_image`).
@@ -164,6 +196,10 @@ CVE counts are distinct (CVE, package) pairs from the pinned grype and trivy, wi
 | User | `mysql` (1001) | 1001 | 1001 |
 | `VOLUME` / `EXPOSE` declared | yes | no (apko cannot; dirs exist writable) | no |
 | SBOM | not checked | SPDX from apko, cosign attestation (`make sign`) | same |
+
+XtraBackup: the official `percona/percona-xtrabackup:9.7` (9.7.2-2.1) is 1.54 GB on disk / 464 MB to download; the
+Wolfi `percona-xtrabackup:9.7` (9.7.2-2, same release) is 275 MB / 94 MB. A third of the official size is the Azure
+CLI (500 MB); it also ships the AWS CLI and garbd, which the Wolfi image does not (`docs/deviations.md`).
 
 The CVE gap is mostly the distro base: the official image's High findings are all in RHEL libraries (krb5-libs,
 sqlite-libs, expat, json-glib). Neither scanner covers Percona's own packages in either image, so CVEs in mysqld itself
