@@ -1,13 +1,14 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
-Builds Percona Server for MySQL 9.7 and Percona XtraBackup 9.7 from source as Wolfi apk packages (melange) and
-assembles three container images from them (apko). Not an official Percona image.
+Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9.7 from source as Wolfi apk packages
+(melange) and assembles four container images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
 | `percona-server:9.7` | Distroless: `ENTRYPOINT /usr/sbin/mysqld`, no shell, no package manager, no interpreters. |
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
 | `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
+| `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
 
 ## Packages
 
@@ -17,12 +18,13 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 |---|---|
 | `mecab`, `mecab-ipadic` | MeCab full-text parser plugin and its dictionary (not in Wolfi) |
 | `v8` | V8 for the JavaScript stored-program component (`percona-server-js`) |
-| `percona-server` | The server; subpackages `-server`, `-client`, `-libs`, `-rocksdb`, `-js`, `-scripts`, `-dev`, `-test`, `-icu-data-files` |
+| `percona-server` | The server; subpackages `-server`, `-client`, `-libs`, `-rocksdb`, `-js`, `-scripts`, `-dev`, `-test`, `-icu-data-files`, and `percona-mysql-router` (MySQL Router, same source tree and build, as in the RPM) |
 | `percona-mysql-shell` | MySQL Shell, `-dev` image only |
 | `percona-xtrabackup` | XtraBackup (`xtrabackup`, `xbstream`, `xbcrypt`, `xbcloud`); subpackages `-test`, `-dbg` |
 | `percona-telemetry-agent` | Percona telemetry agent, `-dev` image only (as in the official image) |
 | `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
 | `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
+| `percona-mysql-router-docker-scripts` | Entrypoint script of the router image from percona-docker |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -42,9 +44,10 @@ template or lock file changed or its digest is not in the registry. It re-locks 
 matches the apks (commit the rewritten lock file).
 
     scripts/build.sh -n                       # show the plan: BUILD/SKIP for each package and image, with the reason
-    scripts/build.sh                          # build what is needed for all three images
+    scripts/build.sh                          # build what is needed for all four images
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
     scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
+    scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -54,8 +57,8 @@ still go through `make all`.
 Quick checks without docker builds: `make lint test-unit`.
 
 Differences from the official image and from Percona's DEB/RPM builds, each with its reason: `docs/deviations.md`.
-Design and its decisions: `docs/design.md`; pins and their sources: `docs/research.md`; what to build next (MySQL
-Router, the rest of the operator stacks): `docs/roadmap.md`.
+Design and its decisions: `docs/design.md`; pins and their sources: `docs/research.md`; what to build next (the rest
+of the operator stacks): `docs/roadmap.md`.
 
 ## Running the images
 
@@ -174,6 +177,25 @@ Streamed and compressed (`--target-dir` is still required with `--stream`):
 
 `xbcloud` (in the image) puts and gets backups on S3, GCS and Azure directly; the operator uses it that way.
 
+### `percona-mysql-router:9.7`: MySQL Router
+
+    ROUTER=localhost:5000/percona-mysql-router:9.7
+
+The entrypoint is the official one: it bootstraps against an InnoDB Cluster member given by `MYSQL_HOST`, `MYSQL_PORT`,
+`MYSQL_USER`, `MYSQL_PASSWORD` (all four are required), then starts `mysqlrouter` with the generated configuration.
+With a cluster on the docker network `db` (members reachable by name, `n1` one of them):
+
+    docker run -d --name router --network db \
+      -e MYSQL_HOST=n1 -e MYSQL_PORT=3306 -e MYSQL_USER=root -e MYSQL_PASSWORD=secret \
+      -p 6446:6446 -p 6447:6447 \
+      $ROUTER
+
+    mysql -h127.0.0.1 -P6446 -uroot -p     # read-write: the primary
+    mysql -h127.0.0.1 -P6447 -uroot -p     # read-only: a secondary
+
+The image also has MySQL Shell (`docker exec -it router mysqlsh`), `python3` and `curl`, which the Percona Operator's
+router scripts use. A cluster can be created from the `:9.7-dev` image with `mysqlsh` (`dba.createCluster`).
+
 ## Official image vs this build
 
 Measured on 2026-11-16 against `percona/percona-server:9.7` (9.7.2-3.1, pinned by digest as `official_ps_image`).
@@ -200,6 +222,14 @@ CVE counts are distinct (CVE, package) pairs from the pinned grype and trivy, wi
 XtraBackup: the official `percona/percona-xtrabackup:9.7` (9.7.2-2.1) is 1.54 GB on disk / 464 MB to download; the
 Wolfi `percona-xtrabackup:9.7` (9.7.2-2, same release) is 275 MB / 94 MB. A third of the official size is the Azure
 CLI (500 MB); it also ships the AWS CLI and garbd, which the Wolfi image does not (`docs/deviations.md`).
+CVEs (2026-11-16, same scanners and rules): official 551 (grype) / 570 (trivy), with 3 / 2 Critical and 48 / 58 High,
+in the RHEL 9.8 base (krb5-libs, sqlite-libs, util-linux, expat) and the Azure CLI's Python packages (PyJWT,
+cryptography, certifi); Wolfi 0 / 0.
+
+MySQL Router: the official `percona/percona-mysql-router:9.7` (9.7.2-3.1) is 1.20 GB on disk / 315 MB to download in 7
+layers; the Wolfi `percona-mysql-router:9.7` (9.7.2-2) is 444 MB / 165 MB in one layer, both with MySQL Shell. CVEs:
+official 712 (grype) / 720 (trivy), 25 High, none Critical, again in the RHEL base (krb5-libs, sqlite-libs, expat,
+json-glib, vim, pip); Wolfi 0 / 0.
 
 The CVE gap is mostly the distro base: the official image's High findings are all in RHEL libraries (krb5-libs,
 sqlite-libs, expat, json-glib). Neither scanner covers Percona's own packages in either image, so CVEs in mysqld itself

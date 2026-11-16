@@ -4,7 +4,7 @@ setup() {
   ROOT=$(cd "$BATS_TEST_DIRNAME/../.." && pwd)
   TMP=$BATS_TEST_TMPDIR
   mkdir -p "$TMP/img" "$TMP/kd"
-  for n in percona-server percona-server-dev percona-xtrabackup; do
+  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -93,6 +93,16 @@ STUB
   [[ $line == *"localhost:5000/percona-xtrabackup:9.7 "* ]]
   [[ $line == *"localhost:5000/percona-xtrabackup:$v "* ]]
   [[ $line == *"localhost:5000/percona-xtrabackup:$v-7"* ]]
+}
+
+@test "router image is tagged with the server version in its own repository" {
+  BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" percona-mysql-router
+  [ "$status" -eq 0 ]
+  v=$(grep '^ps_version:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)-$(grep '^ps_release:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  line=$(grep -E -- ' publish ' "$TMP/calls")
+  [[ $line == *"localhost:5000/percona-mysql-router:9.7 "* ]]
+  [[ $line == *"localhost:5000/percona-mysql-router:$v "* ]]
+  [[ $line == *"localhost:5000/percona-mysql-router:$v-7"* ]]
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -242,6 +252,16 @@ mkgit_img() {
   rm -f "$TMP/img/percona-server-dev.lock.json"
   LOCK_PKGS='{"name":"percona-mysql-shell"},{"name":"percona-telemetry-agent"},{"name":"percona-server-docker-scripts"}' \
     run "$ROOT/scripts/apko-build.sh" percona-server-dev
+  [ "$status" -eq 0 ]
+  # router: mysqlsh (+ jit) allowed by owner ruling; no telemetry agent, no server, no other image's scripts
+  for p in percona-telemetry-agent percona-server-server percona-server-docker-scripts percona-xtrabackup-docker-scripts; do
+    rm -f "$TMP/img/percona-mysql-router.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-mysql-router
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-mysql-router.lock.json"
+  LOCK_PKGS='{"name":"percona-mysql-router"},{"name":"percona-mysql-shell"},{"name":"percona-mysql-shell-jit"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-mysql-router
   [ "$status" -eq 0 ]
 }
 

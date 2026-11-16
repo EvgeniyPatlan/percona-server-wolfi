@@ -39,6 +39,13 @@ PXB_IMAGE ?= $(REGISTRY)/percona-xtrabackup:9.7
 test-xtrabackup: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) PXB_IMAGE=$(PXB_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/xtrabackup.bats)
 
+# MySQL Router image: versions and operator tools, entrypoint checks, bootstrap against a three-member InnoDB Cluster
+# built from the -dev image, routing on 6446/6447 (docker only, ~10 min).
+ROUTER_IMAGE ?= $(REGISTRY)/percona-mysql-router:9.7
+.PHONY: test-router
+test-router: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) ROUTER_IMAGE=$(ROUTER_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/router.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).

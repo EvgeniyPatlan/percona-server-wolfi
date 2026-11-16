@@ -113,7 +113,9 @@ stage_sources
 
 # Absolute paths outside $PWD are mounted at the same path so melange sees them unchanged.
 extra=(-v "$KEY_DIR:/keys:ro")
-for p in "$ws_root" "$repo" "$deps" "$stage" "$rendered" "$APK_PUBKEY"; do
+# melange cache (ccache, git mirrors), mounted by melange as /var/cache/melange in the build
+cache_dir=${MELANGE_CACHE_DIR:-out/cache}
+for p in "$ws_root" "$repo" "$deps" "$stage" "$rendered" "$APK_PUBKEY" "$cache_dir"; do
   if [[ $p == /* && $p != "$PWD"/* ]]; then extra+=(-v "$p:$p"); fi
 done
 
@@ -132,11 +134,32 @@ args=(build "$rendered" --arch x86_64
 # change the apks): ccache for cached builds, LEAK_SCAN when set.
 envs=()
 if ((cache)); then
-  mkdir -p out/cache
+  mkdir -p "$cache_dir"
   envs+=("CCACHE_DIR=/var/cache/melange/ccache" "CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-30G}")
-  args+=(--cache-dir out/cache)
+  args+=(--cache-dir "$cache_dir")
 fi
 if [[ -n ${LEAK_SCAN:-} ]]; then envs+=("LEAK_SCAN=$LEAK_SCAN"); fi
+# Local git mirrors (scripts/git-mirror.sh, <cache>/git, mounted as /var/cache/melange/git): git inside the build
+# fetches from them instead of the network, via url.<mirror>.insteadOf for the upstream URL with and without .git.
+# The recipes keep their URLs and expected-commit checks, so the result is the same; GIT_MIRRORS=0 turns it off.
+# protocol.file.allow: git refuses file:// for submodules by default.
+if ((cache)) && [[ ${GIT_MIRRORS:-1} != 0 && -d $cache_dir/git ]]; then
+  gitcfg=("protocol.file.allow=always")
+  while IFS= read -r m; do
+    rel=${m#"$cache_dir"/git/}
+    gitcfg+=("url.file:///var/cache/melange/git/$rel.insteadOf=https://${rel%.git}")
+    gitcfg+=("url.file:///var/cache/melange/git/$rel.insteadOf=https://$rel")
+  done < <(find "$cache_dir/git" -mindepth 2 -type d -name '*.git' -prune | LC_ALL=C sort)
+  if ((${#gitcfg[@]} > 1)); then
+    log_info "git mirrors: $(((${#gitcfg[@]} - 1) / 2)) repositories from $cache_dir/git"
+    envs+=("GIT_CONFIG_COUNT=${#gitcfg[@]}")
+    args+=(--exclude-env-from-recorded-config GIT_CONFIG_COUNT)
+    for i in "${!gitcfg[@]}"; do
+      envs+=("GIT_CONFIG_KEY_$i=${gitcfg[$i]%%=*}" "GIT_CONFIG_VALUE_$i=${gitcfg[$i]#*=}")
+      args+=(--exclude-env-from-recorded-config "GIT_CONFIG_KEY_$i" --exclude-env-from-recorded-config "GIT_CONFIG_VALUE_$i")
+    done
+  fi
+fi
 if ((${#envs[@]})); then
   envfile=out/melange.env
   ((cache)) || envfile=out/melange-nocache.env

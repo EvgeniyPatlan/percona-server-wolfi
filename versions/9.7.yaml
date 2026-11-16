@@ -99,5 +99,7 @@ boost_version: "1.87.0"
 official_ps_image: "docker.io/percona/percona-server@sha256:7b1225974980bfb2f7eda4ee54f5d8fdf01e0a647741a26d6222f948470cb684"
 # percona/percona-xtrabackup:9.7 == 9.7.2-2 == 9.7.2-2.1
 official_pxb_image: "docker.io/percona/percona-xtrabackup@sha256:07e883d6aab312ba14a5bf47d8d647690ce0db10a083d9d2d572c19c84884b4b"
+# percona/percona-mysql-router:9.7 == 9.7.2-3 == 9.7.2-3.1 (index digest, 2026-11-16)
+official_router_image: "docker.io/percona/percona-mysql-router@sha256:a1ecf51e0688b8a6e5e9b4f344d6f255585836a4f64e0ccd4a02df9cdf773296"
 # previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
 official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"

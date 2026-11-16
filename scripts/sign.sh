@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sign.sh <sign|verify> <percona-server|percona-server-dev|percona-xtrabackup>
+# sign.sh <sign|verify> <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router>
 # sign:   cosign sign + cosign attest --type spdxjson (the apko SBOM) of the published index digest
 #         (out/results/<name>.digest, $REGISTRY/<repo>@<digest>), key $KEY_DIR/cosign.key (COSIGN_PASSWORD from env).
 # verify: cosign verify + verify-attestation with $KEY_DIR/cosign.pub.
@@ -18,6 +18,7 @@ mode=$1 name=$2
 case $name in
   percona-server | percona-server-dev) repo=percona-server ;;
   percona-xtrabackup) repo=percona-xtrabackup ;;
+  percona-mysql-router) repo=percona-mysql-router ;;
   *) die "unknown image: $name" ;;
 esac
 case $mode in sign | verify) ;; *) die "unknown mode: $mode (sign|verify)" ;; esac

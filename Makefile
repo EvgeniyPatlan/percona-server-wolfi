@@ -27,8 +27,8 @@ include mk/supply.mk
 # REPRO=0 skips the second package build and the comparison in phase-a (not for a release).
 REPRO ?= 1
 .NOTPARALLEL:
-phase-a: sources vendor-v8 packages $(if $(filter 0,$(REPRO)),,repro-all verify-repro)
-phase-b: registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh test-xtrabackup scan sign verify-sign
+phase-a: sources git-mirrors vendor-v8 packages $(if $(filter 0,$(REPRO)),,repro-all verify-repro)
+phase-b: registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh test-xtrabackup test-router scan sign verify-sign
 # `all` always produces the report, even after a failure, and exits with the original status.
 all:
 	@$(MAKE) phase-a phase-b; rc=$$?; $(MAKE) report; exit $$rc

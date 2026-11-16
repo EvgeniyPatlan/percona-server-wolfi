@@ -16,6 +16,8 @@ STUB
   export DOCKER="$TMP/docker" PKG_DIR="$TMP/pkgs" RENDER_DIR="$TMP/rendered" KEY_DIR="$TMP/kd"
   export APK_PUBKEY="$TMP/kd/ps-wolfi-dev.rsa.pub" SOURCES_DIR="$TMP/src" STAGE_DIR="$TMP/stage"
   export REPRO_GIT_COMMIT=0123456789abcdef0123456789abcdef01234567
+  # the melange cache (ccache, git mirrors) of the test, never the repository's out/cache
+  export MELANGE_CACHE_DIR="$TMP/cache"
   ARGS=(foo --workspace-root "$TMP/ws" --out "$TMP/repo")
 }
 
@@ -315,6 +317,42 @@ STUB
   [ "$status" -eq 0 ]
   grep -q -- '--env-file' "$TMP/calls"
   run grep -q -- '--cache-dir' "$TMP/calls"; [ "$status" -ne 0 ]
+}
+
+@test "git mirrors in the cache dir reach git in the build as insteadOf rules, excluded from the recorded config" {
+  mkdir -p "$TMP/cache/git/github.com/percona/percona-server.git" "$TMP/cache/git/github.com/percona/rocksdb.git"
+  run "$ROOT/scripts/melange-build.sh" "${ARGS[@]}"
+  [ "$status" -eq 0 ]
+  grep -q -- "--cache-dir $TMP/cache" "$TMP/calls"
+  f=$(grep -o -- '--env-file [^ ]*' "$TMP/calls" | head -n1 | cut -d' ' -f2)
+  [ -f "$ROOT/$f" ] && f=$ROOT/$f
+  grep -qx 'GIT_CONFIG_COUNT=5' "$f"
+  grep -qx 'GIT_CONFIG_KEY_0=protocol.file.allow' "$f"
+  grep -qx 'GIT_CONFIG_VALUE_0=always' "$f"
+  # both spellings of each upstream URL (with and without .git) map to the mirror mounted under /var/cache/melange
+  m=file:///var/cache/melange/git/github.com/percona
+  grep -qx "GIT_CONFIG_KEY_1=url.$m/percona-server.git.insteadOf" "$f"
+  grep -qx 'GIT_CONFIG_VALUE_1=https://github.com/percona/percona-server' "$f"
+  grep -qx 'GIT_CONFIG_VALUE_2=https://github.com/percona/percona-server.git' "$f"
+  grep -qx "GIT_CONFIG_KEY_3=url.$m/rocksdb.git.insteadOf" "$f"
+  grep -qx 'GIT_CONFIG_VALUE_4=https://github.com/percona/rocksdb.git' "$f"
+  for v in GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_4; do
+    grep -q -- "--exclude-env-from-recorded-config $v" "$TMP/calls"
+  done
+}
+
+@test "git mirrors: GIT_MIRRORS=0 or --no-cache leave git on the network" {
+  mkdir -p "$TMP/cache/git/github.com/percona/percona-server.git"
+  GIT_MIRRORS=0 run "$ROOT/scripts/melange-build.sh" "${ARGS[@]}"
+  [ "$status" -eq 0 ]
+  run grep -q 'GIT_CONFIG' "$TMP/calls"; [ "$status" -ne 0 ]
+  f=$(grep -o -- '--env-file [^ ]*' "$TMP/calls" | head -n1 | cut -d' ' -f2)
+  [ -f "$ROOT/$f" ] && f=$ROOT/$f
+  run grep -q 'GIT_CONFIG' "$f"; [ "$status" -ne 0 ]
+  : > "$TMP/calls"
+  run "$ROOT/scripts/melange-build.sh" "${ARGS[@]}" --no-cache
+  [ "$status" -eq 0 ]
+  run grep -q -- '--env-file' "$TMP/calls"; [ "$status" -ne 0 ]
 }
 
 @test "LEAK_SCAN unset: no env file for --no-cache builds; a bad value is rejected" {

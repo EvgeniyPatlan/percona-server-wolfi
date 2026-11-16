@@ -1,0 +1,71 @@
+package:
+  name: percona-mysql-router-docker-scripts
+  version: "@@ps_version@@.@@ps_release@@"
+  epoch: 0
+  description: Entrypoint of the official percona/percona-mysql-router 9.x image (percona-docker mysql-router at a pinned commit, unpatched)
+  copyright:
+    - license: GPL-2.0-only
+  dependencies:
+    runtime:
+      - bash
+      - busybox
+      - percona-mysql-router
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+
+pipeline:
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # mysql-router/Dockerfile.97: COPY dockerdir / (only entrypoint.sh) and LICENSE /licenses/LICENSE.Dockerfile.
+  # entrypoint.sh needs no Wolfi change: bash (/dev/tcp), mktemp and sed (busybox), mysqlrouter.
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      test "$(ls pd-src/mysql-router/dockerdir)" = entrypoint.sh
+      install -Dm0755 pd-src/mysql-router/dockerdir/entrypoint.sh "$d/entrypoint.sh"
+      install -Dm0644 pd-src/mysql-router/LICENSE "$d/licenses/LICENSE.Dockerfile"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - percona-mysql-router-docker-scripts
+  pipeline:
+    - name: entrypoint
+      runs: |
+        bash -n /entrypoint.sh
+        test -x /entrypoint.sh
+        head -n1 /entrypoint.sh | grep -x '#!/bin/bash'
+        grep -q 'mysqlrouter --bootstrap' /entrypoint.sh
+        # without the MYSQL_* variables the entrypoint refuses to start (official behaviour)
+        if /entrypoint.sh mysqlrouter > out 2>&1; then exit 1; fi
+        grep -q 'MYSQL_PASSWORD' out
+        test -f /licenses/LICENSE.Dockerfile
+
+update:
+  enabled: false

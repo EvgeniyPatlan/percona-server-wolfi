@@ -1,0 +1,115 @@
+# percona-mysql-router:@@ps_version@@-@@ps_release@@ - drop-in replacement for the official percona/percona-mysql-router:9.7
+# (percona-docker mysql-router/Dockerfile.97 at percona_docker_commit). Built by scripts/apko-build.sh; the package set
+# is pinned by images/percona-mysql-router.lock.json. Differences: docs/deviations.md ("router" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # entrypoint.sh: bash (/dev/tcp), mktemp and sed (busybox)
+    - busybox
+    - bash
+    - coreutils
+    - findutils
+    # Dockerfile: which tar openssl vim-minimal procps-ng bind-utils (+ glibc-langpack-en, python)
+    - gnutar
+    - openssl
+    - procps
+    - bind-tools
+    - glibc-locale-en
+    # the operator's router scripts call python3 (urllib.parse.quote) and curl (router REST API checks); python3 is
+    # the Python 3.11 that mysqlsh already brings
+    - python3-as-3.11
+    - curl
+    - ca-certificates-bundle
+    # Dockerfile: percona-mysql-router, percona-mysql-shell (owner ruling: mysqlsh and its prebuilt jit library ship
+    # here as in the official image, extending ruling R4 beyond :9.7-dev)
+    - percona-mysql-router
+    - percona-mysql-shell
+    - percona-mysql-router-docker-scripts
+
+# Dockerfile: groupadd -g 1001 mysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -m -c "Default Application User" mysql
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: mkdir -p /tmp/mysqlrouter/run /var/lib/mysqlrouter; chown -R 1001:1001 both;
+# chmod -R 777 /var/log/mysqlrouter /tmp/mysqlrouter /etc/mysqlrouter. VOLUME ["/var/lib/mysqlrouter"] cannot be
+# declared by apko (the directory exists, owned by 1001).
+paths:
+  - path: /home/mysql
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o700
+  - path: /var/lib/mysqlrouter
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /tmp/mysqlrouter
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o777
+  - path: /tmp/mysqlrouter/run
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o777
+  # RPM: %dir %attr(755, mysqlrouter, mysqlrouter) /var/run/mysqlrouter (/var/run -> /run); owned by the image user here
+  - path: /run/mysqlrouter
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /var/log/mysqlrouter
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o777
+  - path: /etc/mysqlrouter
+    type: directory
+    uid: 0
+    gid: 0
+    permissions: 0o777
+  - path: /etc/mysqlrouter/mysqlrouter.conf
+    type: permissions
+    uid: 0
+    gid: 0
+    permissions: 0o777
+
+entrypoint:
+  command: /entrypoint.sh
+cmd: mysqlrouter
+work-dir: /
+
+# Dockerfile ENV; version values are ours (Wolfi build of @@ps_version@@-@@ps_release@@).
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  ROUTE_VERSION: "@@ps_version@@-@@ps_release@@"
+  MYSQL_SHELL_VERSION: "@@mysqlsh_version@@"
+  OS_VER: wolfi
+  FULL_ROUTE_VERSION: "@@ps_version@@-@@ps_release@@.wolfi"
+  FULL_MYSQL_SHELL_VERSION: "@@mysqlsh_version@@.wolfi"
+
+annotations:
+  org.opencontainers.image.title: percona-mysql-router
+  org.opencontainers.image.description: MySQL Router @@ps_version@@-@@ps_release@@ (Percona build) from source on Wolfi, with MySQL Shell (drop-in for percona/percona-mysql-router:9.7). Not an official Percona image.
+  org.opencontainers.image.version: "@@ps_version@@-@@ps_release@@"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64

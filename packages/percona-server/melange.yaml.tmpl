@@ -190,17 +190,14 @@ pipeline:
           rm -rf "${d:?}/$from"
         fi
       done
-      # not shipped (same removals as the RPM spec %install), plus MySQL Router (out of scope) and the
-      # build-host dependent INFO_BIN/INFO_SRC (kernel version, build time)
+      # not shipped (same removals as the RPM spec %install), plus the build-host dependent INFO_BIN/INFO_SRC
+      # (kernel version, build time). MySQL Router stays: it is the percona-mysql-router subpackage.
       rm -rf "$d/usr/share/info" \
         "$d/usr/share/percona-server/mysql.server" "$d/usr/share/percona-server/mysqld_multi.server" \
         "$d/usr/share/percona-server/win_install_firewall.sql" \
         "$d/usr/share/percona-server/audit_log_filter_win_install.sql" \
         "$d/usr/bin/mysql_embedded" "$d/usr/cmake" \
-        "$d/usr/include/kmip.h" "$d/usr/include/kmippp.h" "$d"/usr/lib/libkmip*.a \
-        "$d"/usr/bin/mysqlrouter* "$d/usr/lib/mysqlrouter" "$d/usr/share/mysqlrouter" "$d/etc/mysqlrouter" \
-        "$d"/usr/share/man/man1/mysqlrouter* "$d/var/lib/mysqlrouter" "$d/var/log/mysqlrouter" \
-        "$d/var/run/mysqlrouter" "$d/run/mysqlrouter"
+        "$d/usr/include/kmip.h" "$d/usr/include/kmippp.h" "$d"/usr/lib/libkmip*.a
       find "$d" \( -name 'INFO_BIN*' -o -name 'INFO_SRC*' \) -exec rm -f {} +
       find "$d/usr/share/mysql-test" -maxdepth 1 -name 'core*' -exec rm -f {} + 2>/dev/null || true
       # /etc/my.cnf exactly as the RPM installs it; /etc/my.cnf.d for drop-ins (docker.cnf comes later)
@@ -449,6 +446,51 @@ subpackages:
           test -f "$s/usr/include/mysql/mysql.h"
           test -x "$s/usr/bin/mysql_config"
 
+  # RPM spec: %files -n percona-mysql-router (ps_tag). Before -libs, -client, -scripts and -server, which would
+  # otherwise pick up its files (the -server catch-all, the -scripts #! sweep).
+  - name: percona-mysql-router
+    description: MySQL Router (RPM percona-mysql-router), built from the Percona Server source tree
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          (cd "$d" && ls usr/bin | grep '^mysqlrouter' | sed 's#^#usr/bin/#') > router-bins
+          test -s router-bins
+          # shellcheck disable=SC2046
+          mvp $(cat router-bins) usr/lib/mysqlrouter usr/share/mysqlrouter etc/logrotate.d/mysqlrouter
+          for m in "$d"/usr/share/man/man1/mysqlrouter*; do [ -e "$m" ] && mvp "usr/share/man/man1/${m##*/}"; done
+          # runtime dirs: not shipped by the main package. /run/mysqlrouter (RPM: /var/run/mysqlrouter; /var/run is a
+          # symlink to /run on Wolfi) is not packaged either: melange's tempdir linter rejects packaged /run content, and
+          # the router image creates it (apko paths). The log dir is packaged, as in the RPM.
+          rm -rf "$d/var/lib/mysqlrouter" "$d/var/log/mysqlrouter" "$d/var/run/mysqlrouter" "$d/run/mysqlrouter"
+          install -d -m0755 "$s/var/log/mysqlrouter"
+          # RPM: install -D -m 0644 packaging/rpm-common/mysqlrouter.conf /etc/mysqlrouter/mysqlrouter.conf (configured
+          # from mysqlrouter.conf.in; the only placeholder is the runtime dir, /var/run/mysqlrouter in the RPM layout)
+          conf=ps-build/packaging/rpm-common/mysqlrouter.conf
+          if [ -f "$conf" ]; then
+            install -Dm0644 "$conf" "$s/etc/mysqlrouter/mysqlrouter.conf"
+          else
+            install -d "$s/etc/mysqlrouter"
+            sed 's#@ROUTER_RUNTIMEDIR@#/var/run/mysqlrouter#' ps-src/packaging/rpm-common/mysqlrouter.conf.in \
+              > "$s/etc/mysqlrouter/mysqlrouter.conf"
+          fi
+          if grep -q '@[A-Z_]*@' "$s/etc/mysqlrouter/mysqlrouter.conf"; then exit 1; fi
+          # RPM %doc
+          install -Dm0644 ps-src/router/README.router "$s/usr/share/licenses/percona-mysql-router/README.router"
+          install -Dm0644 ps-src/router/LICENSE.router "$s/usr/share/licenses/percona-mysql-router/LICENSE.router"
+          for b in mysqlrouter mysqlrouter_keyring mysqlrouter_passwd mysqlrouter_plugin_info; do
+            test -x "$s/usr/bin/$b"
+          done
+          test -d "$s/usr/lib/mysqlrouter/private"
+          # anything router-named still in the main tree would end up in percona-server-server: list it
+          (cd "$d" && find . -path '*router*' | sed 's#^#ROUTER-LEFTOVER (stays in the server tree): #') || true
+
   - name: percona-server-libs
     description: Percona Server client library (libperconaserverclient, RPM name libmysqlclient) and client-side auth plugins
     pipeline:
@@ -575,6 +617,9 @@ test:
         - percona-server-scripts
         - percona-server-test
         - mecab-ipadic
+        - percona-mysql-router
+        # ldd for the router library check
+        - posix-libc-utils
         # readelf for the hardening step
         - binutils
   pipeline:
@@ -583,6 +628,23 @@ test:
         # tests/smoke.sh reaches the test workspace through the staged --source-dir (scripts/melange-build.sh)
         test -f tests/smoke.sh || { echo "tests/smoke.sh missing from the test workspace (staged source dir)" >&2; exit 1; }
         PS_VERSION="@@ps_version@@-@@ps_release@@" bash tests/smoke.sh
+    - name: MySQL Router
+      runs: |
+        v=$(mysqlrouter --version)
+        echo "$v"
+        case $v in *"Ver @@ps_version@@"*) ;; *) echo "mysqlrouter: expected version @@ps_version@@" >&2; exit 1 ;; esac
+        # every router binary and plugin resolves its libraries (bundled ones from /usr/lib/mysqlrouter/private)
+        command -v ldd > /dev/null
+        n=0
+        for f in /usr/bin/mysqlrouter* /usr/lib/mysqlrouter/*.so; do
+          out=$(ldd "$f")
+          if printf '%s\n' "$out" | grep 'not found'; then echo "$f: unresolved library" >&2; exit 1; fi
+          n=$((n + 1))
+        done
+        echo "ldd: $n router binaries and plugins resolve all their libraries"
+        mysqlrouter_plugin_info /usr/lib/mysqlrouter/routing.so routing > /dev/null
+        test -f /etc/mysqlrouter/mysqlrouter.conf
+        test -d /var/log/mysqlrouter
     - name: hardening (RELRO, BIND_NOW, stack protector)
       runs: |
         # ruling R7 baseline: full RELRO (-z relro -z now) and -fstack-protector-strong in shipped binaries

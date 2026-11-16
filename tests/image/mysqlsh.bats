@@ -22,24 +22,6 @@ teardown() {
   ps_cleanup
 }
 
-# sh_js <container> <host> <js>: run JavaScript in mysqlsh inside <container>, connected to root@<host>.
-# HOME of uid 1001 does not exist, so the shell's config directory goes to /tmp.
-sh_js() {
-  ps_docker exec -e MYSQLSH_USER_CONFIG_HOME=/tmp "$1" \
-    mysqlsh --js --no-wizard --uri "root:x@$2:3306" -e "$3"
-}
-
-# gr_member <net> <n>: start group replication member <n> (ready, root@% with password x); prints the container id
-gr_member() {
-  local name=n$2 full cid
-  full=$(ps_prefix)-$name
-  local -a args
-  mapfile -t args < <(gr_mysqld_args "$2" "$full")
-  cid=$(ps_start "$name" --network "$1" --hostname "$full" -e MYSQL_ROOT_PASSWORD=x -e 'MYSQL_ROOT_HOST=%' -- "${args[@]}") || return 1
-  ps_wait_ready "$cid" 180 || return 1
-  printf '%s\n' "$cid"
-}
-
 @test "mysqlsh: runs in JS mode and reports its version" {
   run ps_docker run --rm --entrypoint mysqlsh -e MYSQLSH_USER_CONFIG_HOME=/tmp "$PS_IMAGE" --js -e 'print("v=" + shell.version + "\n")'
   echo "$output"
