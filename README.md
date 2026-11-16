@@ -50,7 +50,8 @@ still go through `make all`.
 Quick checks without docker builds: `make lint test-unit`.
 
 Differences from the official image and from Percona's DEB/RPM builds, each with its reason: `docs/deviations.md`.
-Design and its decisions: `docs/design.md`; pins and their sources: `docs/research.md`.
+Design and its decisions: `docs/design.md`; pins and their sources: `docs/research.md`; what to build next (XtraBackup,
+MySQL Router, the rest of the operator stacks): `docs/roadmap.md`.
 
 ## Running the images
 
