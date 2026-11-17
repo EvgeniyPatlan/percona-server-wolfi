@@ -5,7 +5,7 @@ setup() {
   TMP=$BATS_TEST_TMPDIR
   mkdir -p "$TMP/img" "$TMP/kd"
   for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-haproxy percona-fluentbit percona-orchestrator \
-    percona-server-mysql-operator percona-xtradb-cluster-operator; do
+    percona-server-mysql-operator percona-xtradb-cluster-operator percona-proxysql3; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -148,6 +148,16 @@ STUB
     [ "$(grep -o "localhost:5000/$img:[^ ]*" <<< "$line" | sort -u | wc -l)" -eq 2 ]
     [[ $line == *"--build-date $(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)"* ]]
   done
+}
+
+@test "proxysql3 image is tagged with the ProxySQL version in its own repository" {
+  BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" percona-proxysql3
+  [ "$status" -eq 0 ]
+  v=$(grep '^proxysql_version:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  line=$(grep -E -- ' publish ' "$TMP/calls")
+  [[ $line == *"localhost:5000/percona-proxysql3:${v%.*} "* ]]
+  [[ $line == *"localhost:5000/percona-proxysql3:$v "* ]]
+  [[ $line == *"localhost:5000/percona-proxysql3:$v-7"* ]]
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -359,6 +369,17 @@ mkgit_img() {
       run "$ROOT/scripts/apko-build.sh" "$n"
     [ "$status" -eq 0 ]
   done
+  # proxysql3: the server client and my_print_defaults only; no server, mysqlsh, router, telemetry or other scripts
+  for p in percona-server-server percona-mysql-shell percona-mysql-router percona-telemetry-agent \
+    percona-server-docker-scripts percona-xtrabackup-docker-scripts; do
+    rm -f "$TMP/img/percona-proxysql3.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-proxysql3
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-proxysql3.lock.json"
+  LOCK_PKGS='{"name":"proxysql"},{"name":"percona-server-client"},{"name":"percona-proxysql-my-print-defaults"},{"name":"bash"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-proxysql3
+  [ "$status" -eq 0 ]
 }
 
 @test "distroless: interpreters (perl, python) and the scripts subpackage are rejected; -dev allows them" {

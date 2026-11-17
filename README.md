@@ -1,7 +1,7 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
 Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9.7 from source as Wolfi apk packages
-(melange) and assembles nine container images from them (apko). Not an official Percona image.
+(melange) and assembles ten container images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
@@ -14,6 +14,7 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-orchestrator:3.2.6` | Drop-in replacement for the official `percona/percona-orchestrator:3.2.6-25` (Percona Operator for MySQL, async replication): Orchestrator and `orchestrator-client` built from source, the same entrypoint (bash), configuration (SQLite backend, raft) and `add_mysql_nodes.sh`. |
 | `percona-server-mysql-operator:1.3.0` | Drop-in replacement for the official `percona/percona-server-mysql-operator:1.3.0` (Percona Operator for MySQL): the manager and the helpers its init container copies into every pod, built from the `v1.3.0` tag. |
 | `percona-xtradb-cluster-operator:1.20.0` | Drop-in replacement for the official `percona/percona-xtradb-cluster-operator:1.20.0` (Percona Operator for MySQL based on PXC): the manager and its init-container helpers, built from the `v1.20.0` tag. |
+| `percona-proxysql3:3.0` | Drop-in replacement for the official `percona/proxysql3:3.0.9-1.1` (PXC operator): ProxySQL 3.0.9 (Wolfi's `proxysql` package, same upstream release) with Percona's `proxysql-admin` tools, the same entrypoint and configuration, and the Percona Server client. |
 
 ## Packages
 
@@ -36,6 +37,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-orchestrator-docker-scripts` | Entrypoint, `/etc/orchestrator` configuration and `add_mysql_nodes.sh` of the orchestrator image from percona-docker |
 | `percona-server-mysql-operator` | Percona Operator for MySQL (Go, from its repository's `build/Dockerfile`); subpackage `-helpers` (bootstrap, healthcheck, sidecar, peer-list, ... and the scripts under `/opt/percona-server-mysql-operator`) |
 | `percona-xtradb-cluster-operator` | Percona Operator for MySQL based on PXC (Go); subpackage `-helpers` (peer-list, pitr, xtrabackup sidecar, ... and the init-container scripts in `/`, `/backup`, `/logcollector`) |
+| `percona-proxysql-admin` | Percona's ProxySQL tools as in the `proxysql3` rpm: `proxysql-admin`, `proxysql-status`, `percona-scheduler-admin`, `pxc_scheduler_handler` (Go, built here), the galera checker scripts, `/etc/config.toml` |
+| `percona-proxysql-docker-scripts` | Entrypoint, configuration and `add_*_nodes.sh` of the proxysql3 image from percona-docker; subpackage `percona-proxysql-my-print-defaults` (`my_print_defaults` alone, as the Dockerfile takes it from the server rpm) |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -62,6 +65,7 @@ matches the apks (commit the rewritten lock file).
     scripts/build.sh percona-haproxy percona-fluentbit   # the operators' HAProxy and log collector images
     scripts/build.sh percona-orchestrator     # only the orchestrator image (no server build)
     scripts/build.sh percona-server-mysql-operator percona-xtradb-cluster-operator   # the operator images (Go only)
+    scripts/build.sh percona-proxysql3        # only the ProxySQL image (server client, admin tools, entrypoint)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -226,6 +230,24 @@ argument `logrotate` runs the daily logrotate job under supercronic:
       localhost:5000/percona-fluentbit:5.0
     docker run -d -e SERVICE_TYPE=mysql -e MONITOR_PASSWORD=<pw> -v <datadir>:/var/lib/mysql \
       localhost:5000/percona-fluentbit:5.0 logrotate
+
+### `percona-proxysql3:3.0`: ProxySQL
+
+    PROXYSQL=localhost:5000/percona-proxysql3:3.0
+
+The entrypoint is the official one: it writes `PROXY_ADMIN_USER`/`PROXY_ADMIN_PASSWORD`, `MONITOR_PASSWORD`,
+`OPERATOR_USERNAME`/`OPERATOR_PASSWORD` into `/etc/proxysql/proxysql.cnf` and `/etc/proxysql-admin.cnf`, then starts
+`proxysql -f -c /etc/proxysql/proxysql.cnf --reload`. Clients connect on 3306 (and 33062), the admin interface is 6032
+(the `admin` user may only connect from inside the container):
+
+    docker run -d --name proxysql --network db -e PROXY_ADMIN_PASSWORD=secret -p 3306:3306 $PROXYSQL
+    docker exec -e MYSQL_PWD=secret proxysql mysql -h127.0.0.1 -P6032 -uadmin \
+      -e "INSERT INTO mysql_servers (hostgroup_id, hostname, port, use_ssl) VALUES (0, 'db1', 3306, 1);
+          INSERT INTO mysql_users (username, password, default_hostgroup) VALUES ('app', 'apppw', 0);
+          LOAD MYSQL SERVERS TO RUNTIME; LOAD MYSQL USERS TO RUNTIME"
+    mysql -h127.0.0.1 -P3306 -uapp -papppw
+
+With a PXC cluster, `proxysql-admin` (and the operator's `add_pxc_nodes.sh`) configures the hostgroups instead.
 
 ## Official image vs this build
 

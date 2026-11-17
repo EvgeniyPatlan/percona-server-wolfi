@@ -9,7 +9,8 @@ reference sections below it explain each component, what to send back when it fa
     make tools-pull keys          # once: pull pinned tool images, generate signing keys (then commit the public keys)
     make phase-a                  # sources vendor-v8 packages repro-all verify-repro
     make phase-b                  # registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh
-                                  #   test-xtrabackup test-router test-haproxy test-fluentbit test-orchestrator scan sign verify-sign
+                                  #   test-xtrabackup test-router test-haproxy test-fluentbit test-orchestrator
+                                  #   test-operators test-proxysql scan sign verify-sign
     make all                      # phase-a phase-b, then report (always, even after a failure)
     make mtr-nightly              # not part of `all`: upstream MTR suites, run separately (hours)
     scripts/build.sh              # incremental: only out-of-date packages/images (-n: plan only); not for releases
@@ -486,7 +487,7 @@ config, so after any change to a template or to `versions/9.7.yaml` values it us
 too: a reproducible rebuild keeps the lock valid, a changed apk needs a relock.
 
 Reproducibility: `make repro-images` (in `phase-b` right after `images`, before the tests, scanning and signing) runs
-`scripts/repro-images.sh`: a second build of all nine from the lock files the first build used (`RELOCK` cleared; a lock
+`scripts/repro-images.sh`: a second build of all ten from the lock files the first build used (`RELOCK` cleared; a lock
 file that changes fails), with a fresh apko cache and separate output dirs (`out/repro-images/`), published to
 `localhost:5000/repro/...` so the first build's tags, digests and SBOMs stay untouched, then compares each index digest
 with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line must be `OK`. Build date =
@@ -494,7 +495,7 @@ with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line 
 
 Host checks (record in the task report):
 
-1. `make repro-images`: nine `OK` lines.
+1. `make repro-images`: ten `OK` lines.
 2. Distroless: `apko-build.sh percona-server` did not stop with "must not contain" (a runtime dependency pulling in a
    shell, mysqlsh or the agent) or "is distroless but the image contains" (a shell/apk file in the image). If it did,
    send the lock file's package list and the message.
@@ -679,6 +680,25 @@ the pinned commit stamped in, and an init-container run (`ps-init-entrypoint.sh`
 `pxc-init-entrypoint.sh` into `/var/lib/mysql` and `/opt/percona`, both tmpfs) that installs them owned by the
 running uid.
 
+## ProxySQL (`percona-proxysql-admin`, `percona-proxysql-docker-scripts`, `make test-proxysql`)
+
+ProxySQL itself is Wolfi's `proxysql` package (pinned `proxysql_wolfi_version`; built from the same upstream tag as
+Percona's `proxysql3` rpm, see `docs/deviations.md`), so nothing heavy is compiled here. `percona-proxysql-admin` fetches
+`percona/proxysql-admin-tool` at `pat_commit` and its `percona-scheduler` submodule (`percona/pxc_scheduler_handler` at
+`pxc_scheduler_handler_commit`, checked against the submodule pointer) by hash and builds `pxc_scheduler_handler` with
+Wolfi `go-1.26` (module cache in the melange cache); two small files of the ProxySQL tree are fetched by sha256.
+`percona-proxysql-docker-scripts` needs `percona-server-server` from the local repo (its `my_print_defaults`). Both
+are small (a minute each):
+
+    make pkg-percona-proxysql-admin pkg-percona-proxysql-docker-scripts
+    make test-proxysql IMAGE=localhost:5000/percona-server:9.7-dev PROXYSQL_IMAGE=localhost:5000/percona-proxysql3:3.0 report
+
+`tests/image/proxysql.bats` (3 tests, about 2 minutes, docker only): versions of ProxySQL, the admin tools, the mysql
+client and `my_print_defaults`, the helpers they call, uid 1001; the image started offline (`--network none`) with the
+shipped configuration, admin interface on 6032 with the password from `PROXY_ADMIN_PASSWORD`, the entrypoint's
+interfaces (3306, 33062) and monitor password loaded; a `-dev` server added on 6032 (TLS backend, `use_ssl=1`, for the
+`caching_sha2_password` account) and queried and written through 3306 and 33062.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime
@@ -766,7 +786,7 @@ Before and during phase A:
 Phase B:
 
 - [ ] `make phase-b`; then **commit `images/*.lock.json`** created by the first `make images` (Images). Its
-  `repro-images` step printed nine `OK` lines.
+  `repro-images` step printed ten `OK` lines.
 - [ ] Hard pass/fail from the Images section: the edited `/etc/my.cnf` wins over the RPM copy (both commands print
   `PASS`); distroless build did not stop with a "must not contain" message.
 - [ ] `make test-image test-upgrade test-mysqlsh test-xtrabackup test-router test-orchestrator` green; no `ALL-SKIPPED` line; skipped upgrade cases (server refuses the jump)

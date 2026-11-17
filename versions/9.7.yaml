@@ -79,6 +79,25 @@ ps_mycnf_sha256: "e9cede360a983b8be685d145f35b5ad17d40ba327b32cfab2b6bff8df43539
 # main HEAD on 2026-11-13; percona-server-9.x/Dockerfile (PS_VERSION 9.7.2-3.1) is identical here
 percona_docker_commit: "91391598878bb16a47a2655147cb85878858ca36"
 
+# --- ProxySQL 3 for the PXC operator (percona-docker proxysql/Dockerfile-proxysql3: PROXYSQL_VERSION 3.0.9-1.1) ---
+# The proxysql binary is Wolfi's `proxysql` package (same upstream tag and build options as Percona's rpm; see
+# docs/deviations.md); this repository builds the Percona additions of the rpm.
+proxysql_version: "3.0.9"
+# Wolfi package pinned in the image (APKINDEX 2026-11-17: built from sysown/proxysql v3.0.9 = proxysql_commit)
+proxysql_wolfi_version: "3.0.9-r0"
+# peeled commit of sysown/proxysql tag v3.0.9 (the rpm's `proxysql --version`: 3.0.9-percona-1.1)
+proxysql_commit: "7ddb3dc015d1440e8a0fb0bbafa2df9aaaa2669d"
+# files of the ProxySQL tree at proxysql_commit shipped by the rpm / image (identical to the official image's copies)
+proxysql_galera_checker_sha256: "b4b9471c9f939bddd017190ee3a8400ceb2965a8ca074c327d7bef21ec1181db"
+proxysql_galera_writer_sha256: "2870aeb058386d02dc07bc97a6a3e822bcc977ade833ebebcfae7e5e8c667a74"
+proxysql_license_sha256: "e1c0ad728983d8a57335e52cf1064f1affd1d454173d8cebd3ed8b4a72b48704"
+# percona/proxysql-admin-tool: no v3.0.9 tag; branch v3.0.9-dev at the commit recorded as vcs.revision in the
+# official image's pxc_scheduler_handler (PSQLADM-598, 2026-07-30); PROXYSQL_ADMIN_VERSION in proxysql-common
+pat_version: "3.0.9"
+pat_commit: "c9f572961e627a43a583f8fc71b13491588c6883"
+# percona/pxc_scheduler_handler: the percona-scheduler submodule commit at pat_commit
+pxc_scheduler_handler_commit: "6f2c00b78cd6f3de62efa71826b978b112cf8c55"
+
 # --- MeCab (full-text parser plugin); Debian orig tarballs (upstream Google Drive link is not scriptable) ---
 mecab_version: "0.996"
 mecab_url: "https://deb.debian.org/debian/pool/main/m/mecab/mecab_0.996.orig.tar.gz"
@@ -101,6 +120,9 @@ official_ps_image: "docker.io/percona/percona-server@sha256:7b1225974980bfb2f7ed
 official_pxb_image: "docker.io/percona/percona-xtrabackup@sha256:07e883d6aab312ba14a5bf47d8d647690ce0db10a083d9d2d572c19c84884b4b"
 # percona/percona-mysql-router:9.7 == 9.7.2-3 == 9.7.2-3.1 (index digest, 2026-11-16)
 official_router_image: "docker.io/percona/percona-mysql-router@sha256:a1ecf51e0688b8a6e5e9b4f344d6f255585836a4f64e0ccd4a02df9cdf773296"
+# percona/proxysql3:3.0.9-1.1 (index digest, 2026-11-17; the tag Dockerfile-proxysql3 at percona_docker_commit builds;
+# :3.0 / :latest have moved on to 3.0.9-1.3)
+official_proxysql3_image: "docker.io/percona/proxysql3@sha256:f875955d7e58b999b0a3bf3523cfb6aed53065685415def968cb08c5fb3976d4"
 # previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
 official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"
 
