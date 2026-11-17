@@ -1,0 +1,76 @@
+# percona-haproxy:@@haproxy_version@@ - drop-in replacement for the official percona/haproxy:@@haproxy_version@@-1
+# (percona-docker haproxy/Dockerfile at percona_docker_commit), used by the Percona operators for MySQL (PS) and for
+# PXC (PXC). Built by scripts/apko-build.sh; the package set is pinned by images/percona-haproxy.lock.json.
+# Differences: docs/deviations.md ("haproxy" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # /bin/sh is bash, as on UBI: the official entrypoint (#!/bin/sh) and the PXC operator's haproxy-entrypoint.sh
+    # use `+=`, `[[ =~ ]]` and `source`, which busybox ash lacks
+    - busybox
+    - bash
+    - bash-binsh
+    # date +%3N, timeout, sort --version-sort, cut, uniq, tr, cat (official and operator scripts); GNU grep/sed
+    - coreutils
+    - grep
+    - sed
+    - findutils
+    # Dockerfile: which tar socat procps-ng (which: busybox)
+    - gnutar
+    - socat
+    - procps
+    # Dockerfile: percona-haproxy. Wolfi's -nocaps build: the default haproxy-3.x binary carries the
+    # cap_net_bind_service file capability, which makes exec fail in pods that drop all capabilities; every port here
+    # is above 1024.
+    - haproxy-@@haproxy_series@@-nocaps=@@haproxy_apk_version@@
+    # Dockerfile: percona-xtradb-cluster-client (the mysql client of the check scripts); this repository's client
+    - percona-server-client
+    - percona-haproxy-docker-scripts
+
+# Dockerfile: groupadd -g 1001 mysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -c "Default Application User" mysql
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: chown -R 1001:1001 /run /etc/haproxy /etc/haproxy/pxc /etc/haproxy-custom (the /etc ones are in the apk).
+# VOLUME ["/etc/haproxy/pxc"] cannot be declared by apko (the directory exists, owned by 1001).
+paths:
+  - path: /run
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+
+entrypoint:
+  command: /entrypoint.sh
+cmd: haproxy
+work-dir: /
+
+# Dockerfile ENV: PERCONA_VERSION is the version of the PXC client rpm; ours is the Percona Server client of this
+# repository.
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  PERCONA_VERSION: "@@ps_version@@-@@ps_release@@.wolfi"
+
+annotations:
+  org.opencontainers.image.title: percona-haproxy
+  org.opencontainers.image.description: HAProxy @@haproxy_version@@ (Wolfi) with the percona/haproxy entrypoint and check scripts and the Percona Server @@ps_version@@ client (drop-in for percona/haproxy:@@haproxy_version@@-1). Not an official Percona image.
+  org.opencontainers.image.version: "@@haproxy_version@@"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64

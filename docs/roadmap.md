@@ -8,8 +8,8 @@ Wolfi itself ships `percona-server-8.4` (8.4.2), `percona-server-9.1`, `percona-
 3.0.9. All but ProxySQL are far behind 9.7, so they are not a base for this work.
 
 Done in this repository: Percona Server 9.7 (`percona-server`, plus `v8`, `mecab`, `mecab-ipadic`), MySQL Shell,
-the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); images `percona-server:9.7`,
-`percona-server:9.7-dev`, `percona-xtrabackup:9.7` and `percona-mysql-router:9.7`.
+the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); HAProxy (item 4) and the log collector (item 7); images `percona-server:9.7`,
+`percona-server:9.7-dev`, `percona-xtrabackup:9.7`, `percona-mysql-router:9.7`, `percona-haproxy:3.4` and `percona-fluentbit:5.0`.
 
 ## Components to create
 
@@ -20,10 +20,10 @@ Effort is a rough estimate (S, M, L).
 | 1 | ~~Percona XtraBackup 9.7~~ **done** | PS operator backups, PXC | `percona-xtrabackup`, `percona-xtrabackup-docker-scripts` | `percona-xtrabackup:9.7` (no garbd, no AWS/Azure CLIs: not used by the PS operator) | 8.4.0 only | S |
 | 2 | ~~MySQL Router 9.7~~ **done** | PS operator (group replication routing) | `percona-mysql-router`, a subpackage of the `percona-server` recipe (same source tree), and `percona-mysql-router-docker-scripts` | `percona-mysql-router:9.7` (router, mysqlsh with the jit library by owner ruling, entrypoint) | none | S-M |
 | 3 | Orchestrator | PS operator (async replication) | `percona-orchestrator`, `percona-orchestrator-client` (Go, `percona/orchestrator`) | `percona-orchestrator` | none | M |
-| 4 | HAProxy, operator flavour | PS and PXC operators | Wolfi `haproxy-3.x` instead of Percona's `percona-haproxy` rpm, plus the operator check scripts | `haproxy` | haproxy 3.2/3.3 | S |
+| 4 | ~~HAProxy, operator flavour~~ **done** | PS and PXC operators | Wolfi `haproxy-3.4-nocaps` (3.4.7, as the official image) instead of Percona's `percona-haproxy` rpm, plus `percona-haproxy-docker-scripts` | `percona-haproxy:3.4` | haproxy 3.2/3.3/3.4 | S |
 | 5 | Percona Toolkit | PS and PXC operators (toolkit image, pt-heartbeat, ...) | `percona-toolkit` (Perl) and `perl-DBD-mysql` against `percona-server-libs` | `percona-toolkit` | neither | M |
 | 6 | Percona Binlog Server | PS operator (binlog storage, PITR) | `percona-binlog-server` (C++, 0.x) | `percona-binlog-server` | none | M |
-| 7 | Log collector | both operators | Wolfi `fluent-bit` and `supercronic`, PS client, logrotate | `fluentbit` (logcollector) | fluent-bit, supercronic | S |
+| 7 | ~~Log collector~~ **done** | both operators | Wolfi `fluent-bit-5.0` and `supercronic`, PS client, logrotate, `percona-fluentbit-docker-scripts` | `percona-fluentbit:5.0` | fluent-bit (up to 5.0), supercronic | S |
 | 8 | Operator binaries | both operators | `percona-server-mysql-operator`, `percona-xtradb-cluster-operator` (Go) | operator images | none (only the MongoDB operator) | S each |
 | 9 | Percona XtraDB Cluster 9.7 | PXC operator | `percona-xtradb-cluster` with Galera (`galera`, `garbd`) | `percona-xtradb-cluster:9.7`, `-backup` | none | L |
 | 10 | ProxySQL, Percona flavour | PXC operator | Wolfi `proxysql` 3.0.9 compared with Percona's `proxysql3` 3.0.9-1.1, plus the `proxysql-admin` tools | `proxysql3` | proxysql 3.0.9 | S-M |
@@ -45,7 +45,7 @@ Already in Wolfi: `socat`, `jq`, `qpress`, `pv`, `libev`, `lz4`, `zstd`, `aws-cl
 
 1. ~~XtraBackup~~ (done): the images cover PS operator backups.
 2. ~~MySQL Router~~ (done): a subpackage of the existing server build.
-3. HAProxy, the log collector and the operator binaries: mostly Wolfi packages plus scripts.
+3. ~~HAProxy, the log collector~~ (done) and the operator binaries: mostly Wolfi packages plus scripts.
 4. Orchestrator, Toolkit (with DBD::mysql) and Binlog Server: the whole PS operator stack on Wolfi.
 5. PXC with Galera and garbd, then ProxySQL: the PXC operator stack.
 6. PMM client: the largest item, shared with the MongoDB and PostgreSQL stacks.

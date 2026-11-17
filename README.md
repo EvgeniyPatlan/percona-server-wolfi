@@ -9,6 +9,8 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
 | `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
 | `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
+| `percona-haproxy:3.4` | Drop-in replacement for the official `percona/haproxy:3.4.7-1` used by the Percona operators: Wolfi HAProxy 3.4.7 (same version) with the same entrypoint, configs and PXC check scripts, and the Percona Server 9.7 client. |
+| `percona-fluentbit:5.0` | Drop-in replacement for the official `percona/fluentbit:5.1.4-1` (the operators' log collector): Wolfi Fluent Bit 5.0.7 (one minor behind, see `docs/deviations.md`), logrotate, supercronic, the same entrypoint and configs, and the Percona Server 9.7 client. |
 
 ## Packages
 
@@ -25,6 +27,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
 | `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
 | `percona-mysql-router-docker-scripts` | Entrypoint script of the router image from percona-docker |
+| `percona-haproxy-docker-scripts` | Entrypoint, configs and check scripts of the HAProxy image from percona-docker, and the HAProxy license file |
+| `percona-fluentbit-docker-scripts` | Entrypoint, Fluent Bit and logrotate configs and the postrotate script of the log collector image from percona-docker |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -44,10 +48,11 @@ template or lock file changed or its digest is not in the registry. It re-locks 
 matches the apks (commit the rewritten lock file).
 
     scripts/build.sh -n                       # show the plan: BUILD/SKIP for each package and image, with the reason
-    scripts/build.sh                          # build what is needed for all four images
+    scripts/build.sh                          # build what is needed for all the images
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
     scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
     scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
+    scripts/build.sh percona-haproxy percona-fluentbit   # the operators' HAProxy and log collector images
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -195,6 +200,23 @@ With a cluster on the docker network `db` (members reachable by name, `n1` one o
 
 The image also has MySQL Shell (`docker exec -it router mysqlsh`), `python3` and `curl`, which the Percona Operator's
 router scripts use. A cluster can be created from the `:9.7-dev` image with `mysqlsh` (`dba.createCluster`).
+
+### `percona-haproxy:3.4` and `percona-fluentbit:5.0`: the operators' proxy and log collector
+
+Both are used by the Percona operators (which set the image names in the custom resource) and behave as the official
+`percona/haproxy` and `percona/fluentbit`. HAProxy, with the official entrypoint and an empty backend list (the operator
+fills `/etc/haproxy/pxc/haproxy.cfg` through `add_pxc_nodes.sh`); Prometheus metrics on 8404:
+
+    docker run -d --name haproxy -p 8404:8404 localhost:5000/percona-haproxy:3.4
+    curl -s localhost:8404/metrics | head
+
+The log collector tails `${LOG_DATA_DIR}/mysqld-error.log` (and the other PXC logs) to stdout as JSON lines, or with the
+argument `logrotate` runs the daily logrotate job under supercronic:
+
+    docker run -d -e LOG_DATA_DIR=/var/lib/mysql -e POD_NAMESPASE=ns -e POD_NAME=pod -v <datadir>:/var/lib/mysql \
+      localhost:5000/percona-fluentbit:5.0
+    docker run -d -e SERVICE_TYPE=mysql -e MONITOR_PASSWORD=<pw> -v <datadir>:/var/lib/mysql \
+      localhost:5000/percona-fluentbit:5.0 logrotate
 
 ## Official image vs this build
 

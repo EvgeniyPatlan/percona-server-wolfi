@@ -1,0 +1,86 @@
+# percona-fluentbit:@@fluentbit_version@@ - drop-in replacement for the official percona/fluentbit:@@official_fluentbit_version@@-1
+# (percona-docker fluentbit/Dockerfile, the ubi9 variant, at percona_docker_commit): the log collector sidecar of the
+# Percona operators for MySQL (PS) and for PXC. Built by scripts/apko-build.sh; the package set is pinned by
+# images/percona-fluentbit.lock.json. Differences: docs/deviations.md ("fluentbit" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # /bin/sh is bash, as on UBI: the official entrypoint (#!/bin/sh) uses `[[ ]]`, `+=` and `source`
+    - busybox
+    - bash
+    - bash-binsh
+    - coreutils
+    - findutils
+    - grep
+    - sed
+    # Dockerfile: hostname (hostname -I in postrotate-mysql.sh: net-tools; busybox's hostname has no -I), procps-ng,
+    # tar, logrotate
+    - net-tools
+    - procps
+    - gnutar
+    - logrotate
+    # Dockerfile: supercronic (release binary v0.2.51, sha1-checked) -> Wolfi supercronic, same version
+    - supercronic
+    # Dockerfile: fluent-bit-${FLUENTBIT_VERSION} (rpm from packages.fluentbit.io) -> Wolfi's newest stream
+    - fluent-bit-@@fluentbit_series@@=@@fluentbit_apk_version@@
+    - ca-certificates-bundle
+    # Dockerfile: percona-server-client-${PERCONA_VERSION}
+    - percona-server-client
+    - percona-fluentbit-docker-scripts
+
+# Dockerfile: groupadd -g 1001 mysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -c "Default Application User" mysql
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: chown -R 1001:1001 /etc/fluentbit /opt/percona /usr/local/bin (the files are in the apk);
+# chmod 664 /etc/passwd (the entrypoint points the 1001 entry at an arbitrary runtime UID, e.g. OpenShift's, which runs
+# with gid 0). VOLUME ["/etc/fluentbit"] cannot be declared by apko (the directory exists, owned by 1001).
+paths:
+  - path: /usr/local/bin
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/passwd
+    type: permissions
+    uid: 0
+    gid: 0
+    permissions: 0o664
+
+entrypoint:
+  command: /entrypoint.sh
+cmd: fluent-bit
+work-dir: /
+
+# Dockerfile ENV, values ours: the Percona Server client of this repository and the Wolfi fluent-bit version.
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  PERCONA_SERVER_VERSION: "@@ps_version@@"
+  PERCONA_SERVER_PERC_VERSION: "@@ps_release@@"
+  PERCONA_SERVER_BUILD_VERSION: "1"
+  PERCONA_VERSION: "@@ps_version@@-@@ps_release@@.wolfi"
+  FLUENTBIT_VERSION: "@@fluentbit_version@@"
+
+annotations:
+  org.opencontainers.image.title: percona-fluentbit
+  org.opencontainers.image.description: Fluent Bit @@fluentbit_version@@ (Wolfi) log collector with logrotate, supercronic and the Percona Server @@ps_version@@ client, entrypoint of percona/fluentbit (drop-in for percona/fluentbit:@@official_fluentbit_version@@-1). Not an official Percona image.
+  org.opencontainers.image.version: "@@fluentbit_version@@"
+  org.opencontainers.image.licenses: Apache-2.0 AND GPL-2.0-only
+
+archs:
+  - x86_64

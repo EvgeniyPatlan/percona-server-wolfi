@@ -4,7 +4,7 @@ setup() {
   ROOT=$(cd "$BATS_TEST_DIRNAME/../.." && pwd)
   TMP=$BATS_TEST_TMPDIR
   mkdir -p "$TMP/img" "$TMP/kd"
-  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router; do
+  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-haproxy percona-fluentbit; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -103,6 +103,21 @@ STUB
   [[ $line == *"localhost:5000/percona-mysql-router:9.7 "* ]]
   [[ $line == *"localhost:5000/percona-mysql-router:$v "* ]]
   [[ $line == *"localhost:5000/percona-mysql-router:$v-7"* ]]
+}
+
+@test "haproxy and fluentbit images are tagged with their own product version in their own repositories" {
+  for n in haproxy fluentbit; do
+    rm -f "$TMP/calls"
+    BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" "percona-$n"
+    [ "$status" -eq 0 ]
+    v=$(grep "^${n}_version:" "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+    s=$(grep "^${n}_series:" "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+    [[ $v == "$s".* ]]
+    line=$(grep -E -- ' publish ' "$TMP/calls")
+    [[ $line == *"localhost:5000/percona-$n:$s "* ]]
+    [[ $line == *"localhost:5000/percona-$n:$v "* ]]
+    [[ $line == *"localhost:5000/percona-$n:$v-7"* ]]
+  done
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -262,6 +277,28 @@ mkgit_img() {
   rm -f "$TMP/img/percona-mysql-router.lock.json"
   LOCK_PKGS='{"name":"percona-mysql-router"},{"name":"percona-mysql-shell"},{"name":"percona-mysql-shell-jit"}' \
     run "$ROOT/scripts/apko-build.sh" percona-mysql-router
+  [ "$status" -eq 0 ]
+  # haproxy / fluentbit: no server, mysqlsh, agent or other image's scripts; haproxy only as the -nocaps build
+  for n in haproxy fluentbit; do
+    for p in percona-server-server percona-mysql-shell percona-telemetry-agent percona-server-docker-scripts \
+      percona-mysql-router-docker-scripts percona-xtrabackup-docker-scripts; do
+      rm -f "$TMP/img/percona-$n.lock.json"
+      LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" "percona-$n"
+      [ "$status" -ne 0 ]
+    done
+  done
+  for p in haproxy-3.4 percona-fluentbit-docker-scripts; do
+    rm -f "$TMP/img/percona-haproxy.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-haproxy
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-haproxy.lock.json"
+  LOCK_PKGS='{"name":"haproxy-3.4-nocaps"},{"name":"bash-binsh"},{"name":"percona-server-client"},{"name":"percona-haproxy-docker-scripts"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-haproxy
+  [ "$status" -eq 0 ]
+  rm -f "$TMP/img/percona-fluentbit.lock.json"
+  LOCK_PKGS='{"name":"fluent-bit-5.0"},{"name":"bash-binsh"},{"name":"percona-server-client"},{"name":"percona-fluentbit-docker-scripts"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-fluentbit
   [ "$status" -eq 0 ]
 }
 
