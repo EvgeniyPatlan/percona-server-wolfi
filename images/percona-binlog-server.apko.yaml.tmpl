@@ -1,0 +1,74 @@
+# percona-binlog-server:@@pbs_version@@-@@pbs_release@@ - drop-in replacement for perconalab/percona-binlog-server:0.4.1, the
+# image the Percona Operator for MySQL runs (deploy/cr.yaml); same Dockerfile as percona-docker percona-binlog-server/
+# at percona_docker_commit, which still pins 0.1.0. Built by scripts/apko-build.sh; the package set is pinned by
+# images/percona-binlog-server.lock.json. Differences: docs/deviations.md ("binlog server" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # the operator's containers run /opt/percona/binlog-server-entrypoint.sh (#!/bin/bash) and the binlog-search
+    # script with /bin/sh -c; the official image's CMD is /bin/bash
+    - busybox
+    - bash
+    # Dockerfile: glibc-langpack-en, tar, hostname (busybox), shadow-utils (only for its own useradd)
+    - glibc-locale-en
+    - gnutar
+    - ca-certificates-bundle
+    - percona-binlog-server
+    - percona-binlog-server-docker-scripts
+
+# Dockerfile: useradd -u 1001 -r -g 0 -s /sbin/nologin -c "Default Application User" pbs (no home directory)
+accounts:
+  users:
+    - username: pbs
+      uid: 1001
+      gid: 0
+      homedir: /home/pbs
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: mkdir -p /var/lib/binlog-server/buffer /var/lib/binlog-server/data /var/log/binlog-server;
+# chown -R 1001:1001; chmod -R 0775
+paths:
+  - path: /var/lib/binlog-server
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /var/lib/binlog-server/buffer
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /var/lib/binlog-server/data
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /var/log/binlog-server
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+
+cmd: /bin/bash
+work-dir: /
+
+# Dockerfile ENV; the version value is ours (Wolfi build of @@pbs_version@@-@@pbs_release@@).
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  PBS_VERSION: "@@pbs_version@@-@@pbs_release@@.wolfi"
+
+annotations:
+  org.opencontainers.image.title: percona-binlog-server
+  org.opencontainers.image.description: Percona Binlog Server @@pbs_version@@-@@pbs_release@@ from source on Wolfi (drop-in for perconalab/percona-binlog-server:0.4.1). Not an official Percona image.
+  org.opencontainers.image.version: "@@pbs_version@@-@@pbs_release@@"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64

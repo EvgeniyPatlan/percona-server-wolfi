@@ -1,0 +1,260 @@
+package:
+  name: percona-binlog-server
+  # apk versions cannot contain "-": 0.4.1-1 becomes 0.4.1.1 (same convention as percona-server)
+  version: "@@pbs_version@@.@@pbs_release@@"
+  epoch: 0
+  description: Percona Binlog Server @@pbs_version@@-@@pbs_release@@ (binlog_server), streams MySQL binary logs to a local directory or S3
+  copyright:
+    # binlog_server is GPL-2.0; Boost (BSL-1.0) and the AWS SDK for C++ with its common runtime (Apache-2.0) are
+    # linked in statically, as in the RPM
+    - license: GPL-2.0-only AND BSL-1.0 AND Apache-2.0
+  # Runtime dependencies are the generated so: ones (libperconaserverclient.so.24 from percona-server-libs,
+  # libcrypto.so.3, libz, libstdc++); RPM Requires lists nothing else.
+
+# Build follows the RPM spec (packaging/rpm/binlog-server.spec @ pbs_tag), release half: Boost @@pbs_boost_version@@
+# and the AWS SDK for C++ @@pbs_aws_sdk_tag@@ (BUILD_ONLY=s3-crt) are built static with the presets the spec copies from
+# extra/cmake_presets, then binlog_server with its own release_gcc14 preset (GCC 14, RelWithDebInfo, BUILD_TESTING=ON)
+# against the MySQL client library of percona-server-dev (the spec uses Percona Server 8.4's -devel; here it is
+# 9.7's libperconaserverclient.so.24, same soname). Differences, all in docs/deviations.md: Boost is configured with
+# only the libraries binlog_server includes (BOOST_INCLUDE_LIBRARIES; the spec builds every library, only these are
+# linked); the SDK uses the common-runtime HTTP client instead of libcurl (USE_CRT_HTTP_CLIENT: Wolfi's curl-dev needs
+# the OpenSSL 4 headers, which cannot be installed next to openssl-dev~3.6, and the S3 traffic of the s3-crt client
+# goes through the common runtime anyway); no binlog_server-debug (the spec's second, Debug build): debug symbols are
+# in percona-binlog-server-dbg.
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - binutils
+      - glibc-dev
+      - linux-headers
+      # the spec's presets name gcc-14 / g++-14 (release_gcc14); GCC 14 also keeps -Werror (compiler_warnings.cmake)
+      # meaningful: newer compilers add warnings this release was never built with
+      - gcc-14
+      - cmake
+      - ninja-build
+      - ccache
+      - pkgconf
+      - git
+      - xz
+      # spec BuildRequires: openssl-devel zlib-devel; percona-server-devel (here: the local percona-server-dev)
+      - openssl-dev~3.6   # libperconaserverclient.so.24 is built against OpenSSL 3.6 (docs/deviations.md)
+      - zlib-dev
+      - percona-server-dev
+      - percona-server-libs
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/Percona-Lab/percona-binlog-server
+      tag: "@@pbs_tag@@"
+      expected-commit: "@@pbs_commit@@"
+      destination: pbs-src
+
+  # spec: git clone --recurse-submodules https://github.com/aws/aws-sdk-cpp.git; git checkout --recurse-submodules
+  # AWS_VERSION (crt/aws-crt-cpp and its crt/* submodules at the commits that tag pins)
+  - uses: git-checkout
+    with:
+      repository: https://github.com/aws/aws-sdk-cpp
+      tag: "@@pbs_aws_sdk_tag@@"
+      expected-commit: "@@pbs_aws_sdk_commit@@"
+      recurse-submodules: true
+      destination: aws-src
+
+  - name: Check sources
+    runs: |
+      export LC_ALL=C
+      # the version binlog_server reports (src/app_version.hpp) is the one this recipe is named after
+      v=$(sed -n 's/.*app_version{\([0-9]*\)U, *\([0-9]*\)U, *\([0-9]*\)U}.*/\1.\2.\3/p' pbs-src/src/app_version.hpp)
+      test "$v" = "@@pbs_version@@" || { echo "pbs-src/src/app_version.hpp says $v, expected @@pbs_version@@" >&2; exit 1; }
+      # the dependency versions are the ones the spec builds and CMakeLists.txt requires EXACT
+      grep -q '^%global BOOST_VERSION @@pbs_boost_version@@$' pbs-src/packaging/rpm/binlog-server.spec
+      grep -q '^%global AWS_VERSION @@pbs_aws_sdk_tag@@$' pbs-src/packaging/rpm/binlog-server.spec
+      grep -q 'find_package(Boost @@pbs_boost_version@@ EXACT' pbs-src/CMakeLists.txt
+      grep -q 'find_package(AWSSDK @@pbs_aws_sdk_tag@@ EXACT' pbs-src/CMakeLists.txt
+      test -f aws-src/crt/aws-crt-cpp/crt/aws-c-s3/CMakeLists.txt
+      # Boost CMake release tarball (pbs_boost_url; sha256 checked by scripts/fetch-sources.sh and again here)
+      echo "@@pbs_boost_sha256@@  boost-@@pbs_boost_version@@-cmake.tar.xz" | sha256sum -c -
+      mkdir boost-src
+      tar -xJf boost-@@pbs_boost_version@@-cmake.tar.xz --strip-components=1 -C boost-src
+      test -f boost-src/CMakeLists.txt
+
+  - name: Compiler setup
+    runs: |
+      top=$(pwd)
+      # Same reproducibility launcher as the other compiled recipes: per-object -frandom-seed=<output path>, ccache
+      # when CCACHE_DIR is set. Non-semantic.
+      cat > "$top/cc-launcher" <<'SH'
+      #!/bin/sh
+      out= prev=
+      for a in "$@"; do
+        [ "$prev" = "-o" ] && out=$a
+        prev=$a
+      done
+      cc=$1
+      shift
+      if [ -n "$out" ]; then set -- "-frandom-seed=$out" "$@"; fi
+      if [ -n "${CCACHE_DIR:-}" ] && command -v ccache >/dev/null 2>&1; then exec ccache "$cc" "$@"; fi
+      exec "$cc" "$@"
+      SH
+      chmod +x "$top/cc-launcher"
+      /usr/bin/gcc-14 --version | head -n1
+      /usr/bin/g++-14 --version | head -n1 | grep -q ' 14\.'
+      grep -Eq 'define OPENSSL_VERSION_MAJOR +3$' /usr/include/openssl/opensslv.h
+
+  - name: Build Boost (static)
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      top=$(pwd)
+      # hardening baseline (hardening_cflags / hardening_ldflags, ruling R7) and the workspace path mapped away
+      export CFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=." CXXFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=."
+      export CPPFLAGS="" LDFLAGS="@@hardening_ldflags@@"
+      # extra/cmake_presets/boost (release_gcc14): BUILD_SHARED_LIBS=OFF BUILD_TESTING=OFF, RelWithDebInfo; only the
+      # libraries binlog_server and its unit tests include (and what they depend on)
+      cmake -S boost-src -B boost-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc-14 -DCMAKE_CXX_COMPILER=/usr/bin/g++-14 \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+        -DCMAKE_INSTALL_PREFIX="$top/deps" -DCMAKE_INSTALL_LIBDIR=lib \
+        -DBOOST_INCLUDE_LIBRARIES="json;url;test;container;lexical_cast;date_time;align;uuid;icl;mp11;endian;algorithm;scope;mpl;math;io" \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/cc-launcher" -DCMAKE_CXX_COMPILER_LAUNCHER="$top/cc-launcher"
+      /usr/lib/ninja-build/bin/ninja -C boost-build -j"$(nproc)"
+      cmake --install boost-build > /dev/null
+      ls "$top"/deps/lib/libboost_json.a "$top"/deps/lib/libboost_url.a "$top"/deps/lib/libboost_unit_test_framework.a
+      test -f "$top/deps/lib/cmake/Boost-@@pbs_boost_version@@/BoostConfig.cmake"
+
+  - name: Build the AWS SDK for C++ (static, s3-crt)
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      top=$(pwd)
+      export CFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=." CXXFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=."
+      export CPPFLAGS="" LDFLAGS="@@hardening_ldflags@@"
+      # extra/cmake_presets/aws-sdk-cpp (release_gcc14), verbatim: CPP_STANDARD=20 ENABLE_UNITY_BUILD=ON
+      # BUILD_SHARED_LIBS=OFF AWS_USE_CRYPTO_SHARED_LIBS=ON S2N_USE_CRYPTO_SHARED_LIBS=ON FORCE_SHARED_CRT=OFF
+      # ENABLE_TESTING=OFF AUTORUN_UNIT_TESTS=OFF BUILD_ONLY=s3-crt; RelWithDebInfo. Added: USE_CRT_HTTP_CLIENT=ON (no
+      # libcurl, see the header), CMAKE_POLICY_VERSION_MINIMUM=3.5 (CMake 4.x and the crt projects' old minimums).
+      # System libcrypto (OpenSSL 3.6): aws-lc is not built.
+      cmake -S aws-src -B aws-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc-14 -DCMAKE_CXX_COMPILER=/usr/bin/g++-14 \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX="$top/deps" -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCPP_STANDARD=20 -DENABLE_UNITY_BUILD=ON -DBUILD_SHARED_LIBS=OFF \
+        -DAWS_USE_CRYPTO_SHARED_LIBS=ON -DS2N_USE_CRYPTO_SHARED_LIBS=ON -DFORCE_SHARED_CRT=OFF \
+        -DENABLE_TESTING=OFF -DAUTORUN_UNIT_TESTS=OFF -DBUILD_ONLY=s3-crt \
+        -DUSE_CRT_HTTP_CLIENT=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/cc-launcher" -DCMAKE_CXX_COMPILER_LAUNCHER="$top/cc-launcher"
+      grep -q '^USE_CRT_HTTP_CLIENT:BOOL=ON$' aws-build/CMakeCache.txt
+      /usr/lib/ninja-build/bin/ninja -C aws-build -j"$(nproc)"
+      cmake --install aws-build > /dev/null
+      ls "$top"/deps/lib/libaws-cpp-sdk-s3-crt.a "$top"/deps/lib/libaws-cpp-sdk-core.a "$top"/deps/lib/libaws-crt-cpp.a
+      # aws-lc is not built (system libcrypto); libcurl is checked on the final binary (Install step)
+      if ls "$top"/deps/lib/libcrypto.a "$top"/deps/lib/libssl.a 2>/dev/null; then
+        echo "aws-lc was built: the SDK must use the system libcrypto" >&2; exit 1
+      fi
+
+  - name: Configure and build binlog_server
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      top=$(pwd)
+      export CFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=." CXXFLAGS="@@hardening_cflags@@ -ffile-prefix-map=$top=."
+      # libperconaserverclient.so.24 lives in /usr/lib/mysql (RPM: /usr/lib64/mysql, found through ld.so.conf.d);
+      # not a default library directory: the binary carries an RPATH to it instead of relying on ld.so.conf.d
+      export CPPFLAGS="" LDFLAGS="@@hardening_ldflags@@ -Wl,-rpath,/usr/lib/mysql"
+      # CMakePresets.json release_gcc14 (common_hidden + release_hidden + gcc14_hidden): CMAKE_PREFIX_PATH = the two
+      # dependency installs, CPP_STANDARD=20, S2N_USE_CRYPTO_SHARED_LIBS=ON, BUILD_TESTING=ON, RelWithDebInfo.
+      # The spec does not `cmake --install` (it copies the binary): no install RPATH handling, build RPATH skipped.
+      cmake -S pbs-src -B pbs-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc-14 -DCMAKE_CXX_COMPILER=/usr/bin/g++-14 \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$top/deps" \
+        -DCPP_STANDARD=20 -DS2N_USE_CRYPTO_SHARED_LIBS=ON -DBUILD_TESTING=ON \
+        -DCMAKE_SKIP_BUILD_RPATH=ON \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/cc-launcher" -DCMAKE_CXX_COMPILER_LAUNCHER="$top/cc-launcher"
+      # the MySQL client library (local percona-server-dev) linked shared, as the RPM links libmysqlclient.so.24;
+      # the soname is checked on the binary in the Install step
+      grep -E '^(MYSQL_[A-Z_]*|PC_MYSQL_[A-Z_]*):' pbs-build/CMakeCache.txt || true
+      grep -q '^MYSQL_LIBRARY:FILEPATH=.*client\.so' pbs-build/CMakeCache.txt || echo 'WARNING: MYSQL_LIBRARY is not a client .so (see above)'
+      grep -q '^CMAKE_CXX_FLAGS:STRING=.*-fstack-clash-protection' pbs-build/CMakeCache.txt
+      grep -q '^CMAKE_EXE_LINKER_FLAGS:STRING=.*-z,now' pbs-build/CMakeCache.txt
+      /usr/lib/ninja-build/bin/ninja -C pbs-build -j"$(nproc)"
+      if command -v ccache >/dev/null 2>&1 && [ -n "${CCACHE_DIR:-}" ]; then ccache --show-stats || true; fi
+      # the project's unit tests (tests/, Boost.Test)
+      ctest --test-dir pbs-build --output-on-failure -j"$(nproc)"
+
+  - name: Install (RPM %install and %files)
+    runs: |
+      d="${{targets.destdir}}"
+      install -Dm0755 pbs-build/binlog_server "$d/usr/bin/binlog_server"
+      # %config(noreplace) %attr(0640,root,root) /etc/percona-binlog-server/main_config.json
+      install -Dm0640 pbs-src/main_config.json "$d/etc/percona-binlog-server/main_config.json"
+      # %license LICENSE, %doc README.md; plus the licenses of the statically linked Boost and AWS SDK / crt
+      install -Dm0644 pbs-src/LICENSE "$d/usr/share/licenses/percona-binlog-server/LICENSE"
+      install -Dm0644 pbs-src/README.md "$d/usr/share/doc/percona-binlog-server/README.md"
+      install -Dm0644 boost-src/LICENSE_1_0.txt "$d/usr/share/licenses/percona-binlog-server/boost/LICENSE_1_0.txt"
+      install -Dm0644 aws-src/LICENSE "$d/usr/share/licenses/percona-binlog-server/aws-sdk-cpp/LICENSE"
+      for l in aws-src/crt/aws-crt-cpp/LICENSE aws-src/crt/aws-crt-cpp/crt/*/LICENSE; do
+        p=${l#aws-src/crt/}
+        install -Dm0644 "$l" "$d/usr/share/licenses/percona-binlog-server/aws-crt/${p%/LICENSE}/LICENSE"
+      done
+      # built binary: version, linkage, RPATH
+      v=$("$d/usr/bin/binlog_server" version)
+      echo "binlog_server version: $v"
+      test "$v" = "@@pbs_version@@"
+      readelf -dW "$d/usr/bin/binlog_server" | grep -E 'NEEDED|RUNPATH|RPATH'
+      readelf -dW "$d/usr/bin/binlog_server" | grep -q 'NEEDED.*lib\(perconaserver\|mysql\)client\.so\.24'
+      readelf -dW "$d/usr/bin/binlog_server" | grep -Eq '(RUNPATH|RPATH).*\[/usr/lib/mysql\]'
+      if readelf -dW "$d/usr/bin/binlog_server" | grep -E 'NEEDED.*(libcurl|libboost|libaws|libs2n)'; then
+        echo "binlog_server must link Boost and the AWS SDK statically and not use libcurl" >&2; exit 1
+      fi
+
+  - name: Build-path leak scan
+    runs: |
+      # No installed file may embed the workspace path (build-path independence); see the other compiled recipes.
+      allow=
+      if [ -f build-path-allowlist ]; then allow=build-path-allowlist; fi
+      LEAK_IGNORE="$(pwd)/csu" LEAK_SCAN="${LEAK_SCAN:-fatal}" bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)" $allow
+  # No `uses: strip` here: percona-binlog-server-dbg (first subpackage) runs split/debug.
+
+subpackages:
+  - name: percona-binlog-server-dbg
+    description: Debug symbols for percona-binlog-server
+    pipeline:
+      - uses: split/debug
+    options:
+      no-depends: true
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - percona-binlog-server
+        # throwaway mysqld with binary logs for the fetch (local repo, packages/percona-server)
+        - percona-server-server
+        - percona-server-client
+        # readelf for the hardening step
+        - binutils
+  pipeline:
+    - name: smoke test (tests/smoke.sh)
+      runs: |
+        test -f tests/smoke.sh || { echo "tests/smoke.sh missing from the test workspace (staged source dir)" >&2; exit 1; }
+        PBS_VERSION="@@pbs_version@@" bash tests/smoke.sh
+    - name: hardening (RELRO, BIND_NOW, stack protector)
+      runs: |
+        f=/usr/bin/binlog_server
+        readelf -lW "$f" | grep -q GNU_RELRO || { echo "$f: no GNU_RELRO segment" >&2; exit 1; }
+        readelf -dW "$f" | grep -Eq '\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' || { echo "$f: neither DT_FLAGS BIND_NOW nor DT_FLAGS_1 NOW" >&2; exit 1; }
+        readelf --dyn-syms -W "$f" | grep __stack_chk_fail >/dev/null || { echo "$f: no __stack_chk_fail import" >&2; exit 1; }
+        echo "ok: $f (RELRO, BIND_NOW, stack protector)"
+
+update:
+  enabled: false

@@ -10,7 +10,7 @@ reference sections below it explain each component, what to send back when it fa
     make phase-a                  # sources vendor-v8 packages repro-all verify-repro
     make phase-b                  # registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh
                                   #   test-xtrabackup test-router test-haproxy test-fluentbit test-orchestrator
-                                  #   test-operators test-proxysql test-pxc scan sign verify-sign
+                                  #   test-operators test-proxysql test-pxc test-binlog-server scan sign verify-sign
     make all                      # phase-a phase-b, then report (always, even after a failure)
     make mtr-nightly              # not part of `all`: upstream MTR suites, run separately (hours)
     scripts/build.sh              # incremental: only out-of-date packages/images (-n: plan only); not for releases
@@ -488,7 +488,7 @@ config, so after any change to a template or to `versions/9.7.yaml` values it us
 too: a reproducible rebuild keeps the lock valid, a changed apk needs a relock.
 
 Reproducibility: `make repro-images` (in `phase-b` right after `images`, before the tests, scanning and signing) runs
-`scripts/repro-images.sh`: a second build of all twelve from the lock files the first build used (`RELOCK` cleared; a lock
+`scripts/repro-images.sh`: a second build of all thirteen from the lock files the first build used (`RELOCK` cleared; a lock
 file that changes fails), with a fresh apko cache and separate output dirs (`out/repro-images/`), published to
 `localhost:5000/repro/...` so the first build's tags, digests and SBOMs stay untouched, then compares each index digest
 with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line must be `OK`. Build date =
@@ -496,7 +496,7 @@ with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line 
 
 Host checks (record in the task report):
 
-1. `make repro-images`: twelve `OK` lines.
+1. `make repro-images`: thirteen `OK` lines.
 2. Distroless: `apko-build.sh percona-server` did not stop with "must not contain" (a runtime dependency pulling in a
    shell, mysqlsh or the agent) or "is distroless but the image contains" (a shell/apk file in the image). If it did,
    send the lock file's package list and the message.
@@ -758,6 +758,26 @@ fixed there; check `packages/percona-server/patches/` first):
   (`pxc-build/percona-xtradb-cluster-galera/`); if both are missing, send `find pxc-build -name garbd -o -name 'libgalera*'`;
 - smoke test: if the single node never reaches `Synced`, send the mysqld error log the step prints.
 
+## Percona Binlog Server (`percona-binlog-server`, `make test-binlog-server`)
+
+`packages/percona-binlog-server` follows the RPM spec of `pbs_tag` (release build only): Boost `pbs_boost_version`
+(the boostorg CMake tarball `pbs_boost_url`, fetched by `make sources`) and the AWS SDK for C++ `pbs_aws_sdk_tag`
+(git with its crt submodules, mirrored by `make git-mirrors`) are built static with the presets the spec uses, then
+`binlog_server` with GCC 14 against `percona-server-dev`; the project's unit tests (`ctest`) run in the build. The
+build fails unless the binary reports `pbs_version`, links the client library with RPATH `/usr/lib/mysql`, and has no
+libcurl/Boost/AWS shared dependency. Its `melange test` (`tests/smoke.sh`) checks version and usage, parses the
+shipped `main_config.json` (`list`), and fetches over TLS from a throwaway mysqld with GTID binary logs into a local
+directory (`list`, `search_by_gtid_set` on the result). About 15 minutes; the SDK is the longest part.
+
+    make pkg-percona-binlog-server pkg-percona-binlog-server-docker-scripts
+    make test-binlog-server IMAGE=localhost:5000/percona-server:9.7-dev PBS_IMAGE=localhost:5000/percona-binlog-server:0.4 report
+
+`tests/image/binlog-server.bats` (4 tests, about 5 minutes, docker only): version, usage, user 1001/group 0, the
+Dockerfile's directories and the shipped config; a CA bundle mounted at the RHEL path the operator uses replaces the
+trusted bundle; `fetch` from a -dev server (GTID, replication user, TLS required) into a directory storage, `list` and
+the operator's `/bin/sh -c` search form; `pull` into MinIO (S3 backend, as the operator configures it) picking up new
+transactions, then a stop on SIGTERM.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime
@@ -845,7 +865,7 @@ Before and during phase A:
 Phase B:
 
 - [ ] `make phase-b`; then **commit `images/*.lock.json`** created by the first `make images` (Images). Its
-  `repro-images` step printed twelve `OK` lines.
+  `repro-images` step printed thirteen `OK` lines.
 - [ ] Hard pass/fail from the Images section: the edited `/etc/my.cnf` wins over the RPM copy (both commands print
   `PASS`); distroless build did not stop with a "must not contain" message.
 - [ ] `make test-image test-upgrade test-mysqlsh test-xtrabackup test-router test-orchestrator` green; no `ALL-SKIPPED` line; skipped upgrade cases (server refuses the jump)

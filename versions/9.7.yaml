@@ -220,3 +220,23 @@ pxc_operator_git_branch: "release-1-20-0"
 pxc_operator_go: "1.26"
 # percona/percona-xtradb-cluster-operator:1.20.0 (index digest, 2026-11-17)
 official_pxc_operator_image: "docker.io/percona/percona-xtradb-cluster-operator@sha256:ac4d0995c71ebc31e4bb19dc17127e48365a4ba25127d70c535d2082e7feed05"
+
+# --- Percona Binlog Server (github.com/Percona-Lab/percona-binlog-server) ---
+# The version the Percona Operator for MySQL uses (deploy/cr.yaml: perconalab/percona-binlog-server:0.4.1) and that
+# image ships (PBS_VERSION=0.4.1-1.el9). percona-docker at percona_docker_commit still pins 0.1.0-1: not followed.
+pbs_tag: "pbs-0.4.1"
+# peeled commit of the tag (tag object 10d65c46696e...)
+pbs_commit: "913bb814db59180614ece0d8fabb126c0fec807c"
+pbs_version: "0.4.1"
+# RPM release of the official image's package (0.4.1-1.el9); apk version is pbs_version.pbs_release (0.4.1.1)
+pbs_release: "1"
+# Boost and the AWS SDK are built from source and linked statically, as the RPM spec does (BOOST_VERSION, AWS_VERSION;
+# CMakeLists.txt asks for both versions EXACT). Boost: the boostorg CMake release tarball of the tag the spec clones.
+pbs_boost_version: "1.90.0"
+pbs_boost_url: "https://github.com/boostorg/boost/releases/download/boost-1.90.0/boost-1.90.0-cmake.tar.xz"
+pbs_boost_sha256: "aca59f889f0f32028ad88ba6764582b63c916ce5f77b31289ad19421a96c555f"
+# AWS SDK for C++ (git, with the crt/aws-crt-cpp submodule and its own submodules, as the spec clones it)
+pbs_aws_sdk_tag: "1.11.774"
+pbs_aws_sdk_commit: "df8176a1d65295fa57e27a56f99146de388e2a47"
+# perconalab/percona-binlog-server:0.4.1 == 0.4.1-1 (index digest, 2026-11-17)
+official_pbs_image: "docker.io/perconalab/percona-binlog-server@sha256:112fd5246493960863261301f26fe463a6378e4e5b5b506a6dc8cb023e60be0c"

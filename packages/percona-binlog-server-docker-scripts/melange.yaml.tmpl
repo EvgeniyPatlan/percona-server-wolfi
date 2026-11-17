@@ -1,0 +1,76 @@
+package:
+  name: percona-binlog-server-docker-scripts
+  version: "@@pbs_version@@.@@pbs_release@@"
+  epoch: 0
+  description: Image glue of the official perconalab/percona-binlog-server image (percona-docker LICENSE at a pinned commit) and the RHEL CA bundle path the Percona Operator mounts
+  copyright:
+    # percona-docker percona-binlog-server/LICENSE is the Apache License 2.0
+    - license: Apache-2.0
+  dependencies:
+    runtime:
+      - ca-certificates-bundle
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - git
+
+pipeline:
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # percona-binlog-server/Dockerfile has no entrypoint or scripts: COPY LICENSE /licenses/LICENSE.Dockerfile only.
+  # The Percona Operator brings its own binlog-server-entrypoint.sh (`exec $@`, copied to /opt/percona by its init
+  # container).
+  #
+  # CA bundle: with spec.backup.pitr.binlogServer.storage.s3.caBundle the operator mounts the bundle at
+  # /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem (naming.SystemCABundlePath, the RHEL path). The AWS common
+  # runtime (aws-c-io) reads the first existing default CA file, /etc/ssl/certs/ca-certificates.crt before the RHEL
+  # paths; on Wolfi that file exists (ca-certificates-bundle), so a bundle mounted at the RHEL path alone would be
+  # ignored. The RHEL path is a symlink to the Wolfi bundle here: the container runtime resolves a mount target
+  # through symlinks, so the operator's bundle then replaces /etc/ssl/certs/ca-certificates.crt for every TLS client.
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      test "$(ls pd-src/percona-binlog-server)" = "$(printf 'Dockerfile\nLICENSE\nREADME.md')"
+      install -Dm0644 pd-src/percona-binlog-server/LICENSE "$d/licenses/LICENSE.Dockerfile"
+      # (the old RHEL path /etc/pki/tls/certs/ca-bundle.crt already comes with Wolfi's ca-certificates-bundle)
+      install -d "$d/etc/pki/ca-trust/extracted/pem"
+      ln -s /etc/ssl/certs/ca-certificates.crt "$d/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - percona-binlog-server-docker-scripts
+  pipeline:
+    - name: files
+      runs: |
+        test -f /licenses/LICENSE.Dockerfile
+        grep -q 'Apache License' /licenses/LICENSE.Dockerfile
+        test "$(readlink /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem)" = /etc/ssl/certs/ca-certificates.crt
+        # both resolve to the Wolfi bundle
+        cmp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/ssl/certs/ca-certificates.crt
+        cmp /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
+
+update:
+  enabled: false

@@ -2,13 +2,13 @@
 # build.sh [options] [image...]: build the apks and the images, skipping whatever is already up to date.
 # Images: percona-server (distroless), percona-server-dev, percona-xtrabackup, percona-mysql-router, percona-haproxy,
 # percona-fluentbit, percona-orchestrator, percona-server-mysql-operator, percona-xtradb-cluster-operator,
-# percona-proxysql3, percona-xtradb-cluster, percona-xtradb-cluster-backup (default: all).
+# percona-proxysql3, percona-xtradb-cluster, percona-xtradb-cluster-backup, percona-binlog-server (default: all).
 # Only the packages the chosen images need are built: the distroless image does not need percona-mysql-shell or
 # percona-telemetry-agent, the xtrabackup image needs percona-server (libs, client) but not the -dev extras, the router
 # image needs percona-server (the router is one of its subpackages) and percona-mysql-shell; the haproxy and fluentbit
 # images need percona-server (its client) and their docker-scripts package; the orchestrator image needs only its own
 # two packages; the proxysql3 image percona-server (client, my_print_defaults) and its own two packages (ProxySQL
-# itself is a Wolfi package).
+# itself is a Wolfi package); the binlog server image needs percona-server (libs) and its own two packages.
 # The operator images (percona-server-mysql-operator, percona-xtradb-cluster-operator) need only their own package.
 # The PXC images (and the xtrabackup image, for garbd) need percona-xtradb-cluster, which is tested against
 # percona-xtrabackup (SST).
@@ -36,11 +36,11 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/common.sh"
 cd "$here/.."
 
-usage() { die "usage: build.sh [-n|--dry-run] [-f|--force] [--packages-only|--images-only] [--dev-keys] [percona-server] [percona-server-dev] [percona-xtrabackup] [percona-mysql-router] [percona-haproxy] [percona-fluentbit] [percona-orchestrator] [percona-server-mysql-operator] [percona-xtradb-cluster-operator] [percona-proxysql3] [percona-xtradb-cluster] [percona-xtradb-cluster-backup]"; }
+usage() { die "usage: build.sh [-n|--dry-run] [-f|--force] [--packages-only|--images-only] [--dev-keys] [percona-server] [percona-server-dev] [percona-xtrabackup] [percona-mysql-router] [percona-haproxy] [percona-fluentbit] [percona-orchestrator] [percona-server-mysql-operator] [percona-xtradb-cluster-operator] [percona-proxysql3] [percona-xtradb-cluster] [percona-xtradb-cluster-backup] [percona-binlog-server]"; }
 
 # Build order (mk/packages.mk PACKAGES; tests/unit/build.bats checks they agree) and the local packages each one is
 # built against.
-ORDER=(mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtrabackup percona-telemetry-agent percona-server-docker-scripts percona-xtrabackup-docker-scripts percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts percona-orchestrator percona-orchestrator-docker-scripts percona-server-mysql-operator percona-xtradb-cluster-operator percona-proxysql-admin percona-proxysql-docker-scripts percona-xtradb-cluster percona-xtradb-cluster-docker-scripts)
+ORDER=(mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtrabackup percona-telemetry-agent percona-server-docker-scripts percona-xtrabackup-docker-scripts percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts percona-orchestrator percona-orchestrator-docker-scripts percona-server-mysql-operator percona-xtradb-cluster-operator percona-proxysql-admin percona-proxysql-docker-scripts percona-xtradb-cluster percona-xtradb-cluster-docker-scripts percona-binlog-server percona-binlog-server-docker-scripts)
 declare -A DEPS=(
   [mecab]="" [mecab-ipadic]="mecab" [v8]="" [percona-server]="mecab mecab-ipadic v8"
   [percona-mysql-shell]="percona-server" [percona-xtrabackup]="percona-server" [percona-telemetry-agent]=""
@@ -51,6 +51,7 @@ declare -A DEPS=(
   [percona-server-mysql-operator]="" [percona-xtradb-cluster-operator]=""
   [percona-proxysql-admin]="percona-server" [percona-proxysql-docker-scripts]="percona-server percona-proxysql-admin"
   [percona-xtradb-cluster]="mecab percona-xtrabackup" [percona-xtradb-cluster-docker-scripts]=""
+  [percona-binlog-server]="percona-server" [percona-binlog-server-docker-scripts]=""
 )
 declare -A IMAGE_PKGS=(
   [percona-server]="mecab mecab-ipadic v8 percona-server percona-server-docker-scripts"
@@ -65,13 +66,14 @@ declare -A IMAGE_PKGS=(
   [percona-proxysql3]="mecab mecab-ipadic v8 percona-server percona-proxysql-admin percona-proxysql-docker-scripts"
   [percona-xtradb-cluster]="mecab mecab-ipadic v8 percona-server percona-xtrabackup percona-telemetry-agent percona-xtradb-cluster percona-xtradb-cluster-docker-scripts"
   [percona-xtradb-cluster-backup]="mecab mecab-ipadic v8 percona-server percona-xtrabackup percona-xtradb-cluster percona-xtradb-cluster-docker-scripts"
+  [percona-binlog-server]="mecab mecab-ipadic v8 percona-server percona-binlog-server percona-binlog-server-docker-scripts"
 )
 # registry repository of each image (the -dev image is a tag of percona-server)
 declare -A IMAGE_REPO=([percona-server]=percona-server [percona-server-dev]=percona-server [percona-xtrabackup]=percona-xtrabackup
   [percona-mysql-router]=percona-mysql-router [percona-haproxy]=percona-haproxy [percona-fluentbit]=percona-fluentbit [percona-orchestrator]=percona-orchestrator
   [percona-server-mysql-operator]=percona-server-mysql-operator [percona-xtradb-cluster-operator]=percona-xtradb-cluster-operator
   [percona-proxysql3]=percona-proxysql3 [percona-xtradb-cluster]=percona-xtradb-cluster
-  [percona-xtradb-cluster-backup]=percona-xtradb-cluster-backup)
+  [percona-xtradb-cluster-backup]=percona-xtradb-cluster-backup [percona-binlog-server]=percona-binlog-server)
 
 dry=0 force=0 do_pkgs=1 do_images=1
 images=()
@@ -85,14 +87,14 @@ while (($#)); do
     -h | --help) sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     percona-server | percona-server-dev | percona-xtrabackup | percona-mysql-router | percona-haproxy | percona-fluentbit | percona-orchestrator | \
       percona-server-mysql-operator | percona-xtradb-cluster-operator | percona-proxysql3 | percona-xtradb-cluster | \
-      percona-xtradb-cluster-backup) images+=("$1") ;;
+      percona-xtradb-cluster-backup | percona-binlog-server) images+=("$1") ;;
     *) usage ;;
   esac
   shift
 done
 ((do_pkgs || do_images)) || die "--packages-only and --images-only exclude each other"
 ((${#images[@]})) || images=(percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-haproxy percona-fluentbit percona-orchestrator percona-server-mysql-operator percona-xtradb-cluster-operator percona-proxysql3
-  percona-xtradb-cluster percona-xtradb-cluster-backup)
+  percona-xtradb-cluster percona-xtradb-cluster-backup percona-binlog-server)
 
 # shellcheck source=lib/keys.sh
 . "$here/lib/keys.sh"

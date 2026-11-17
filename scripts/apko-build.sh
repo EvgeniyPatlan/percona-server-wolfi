@@ -14,7 +14,8 @@
 # percona-orchestrator:<orc_version>, :<orc_version>-<orc_release>;
 # percona-server-mysql-operator:<ps_operator_version>, percona-xtradb-cluster-operator:<pxc_operator_version> (one tag
 # each, as the official operator images); percona-proxysql3:<proxysql series>, :<proxysql_version>;
-# percona-xtradb-cluster and percona-xtradb-cluster-backup:<series>, :<pxc_version>-<pxc_release>.<pxc_rpm_release>.
+# percona-xtradb-cluster and percona-xtradb-cluster-backup:<series>, :<pxc_version>-<pxc_release>.<pxc_rpm_release>;
+# percona-binlog-server:<pbs major.minor>, :<pbs_version>-<pbs_release>.
 # Reproducible inputs: build date from source_date_epoch, VCS autodetection off, the revision annotation is the last
 # commit that touched the build inputs or images/*.tmpl (<sha>-dirty when those have uncommitted changes; RELEASE=1
 # refuses that unless ALLOW_DIRTY=1).
@@ -26,7 +27,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/keys.sh"
 cd "$here/.."
 
-usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator|percona-server-mysql-operator|percona-xtradb-cluster-operator|percona-proxysql3|percona-xtradb-cluster|percona-xtradb-cluster-backup> [--no-publish]"; }
+usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator|percona-server-mysql-operator|percona-xtradb-cluster-operator|percona-proxysql3|percona-xtradb-cluster|percona-xtradb-cluster-backup|percona-binlog-server> [--no-publish]"; }
 (($#)) || usage
 name=$1
 shift
@@ -64,7 +65,7 @@ interpreters='perl[a-z0-9-]*|python[a-z0-9.-]*|percona-server-scripts|jemalloc'
 # others_scripts <x>: every docker-scripts package except percona-<x>-docker-scripts, as a regex alternation
 others_scripts() {
   local p out=
-  for p in server xtrabackup mysql-router haproxy fluentbit orchestrator proxysql xtradb-cluster; do
+  for p in server xtrabackup mysql-router haproxy fluentbit orchestrator proxysql xtradb-cluster binlog-server; do
     [[ $p == "$1" ]] || out+="${out:+|}percona-$p-docker-scripts"
   done
   printf '%s\n' "$out"
@@ -104,6 +105,11 @@ case $name in
   percona-xtradb-cluster-backup) repo_name=percona-xtradb-cluster-backup suffix='' full=$pxc_full
     forbid="$dev_only|$ps_pkgs|percona-xtradb-cluster-server|percona-xtradb-cluster-docker-[a-z]*|percona-server-docker-scripts|percona-xtrabackup-docker-scripts"
     forbid+="|$(others_scripts xtradb-cluster)" ;;
+  # binlog server: its own version series; only the client library of the server (percona-server-libs)
+  percona-binlog-server) repo_name=percona-binlog-server suffix='' full=$(v pbs_version)-$(v pbs_release)
+    series=$(v pbs_version | cut -d. -f1-2)
+    forbid="$dev_only|percona-server-server|percona-server-docker-scripts|percona-xtrabackup-docker-scripts|percona-mysql-router[a-z0-9-]*"
+    forbid+="|$(others_scripts binlog-server)" ;;
   *) die "unknown image: $name" ;;
 esac
 

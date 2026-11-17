@@ -1,8 +1,8 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
-Builds Percona Server for MySQL 9.7 (with MySQL Router), Percona XtraBackup 9.7 and Percona XtraDB Cluster 9.7 (with
-Galera and garbd) from source as Wolfi apk packages (melange) and assembles twelve container images from them (apko).
-Not an official Percona image.
+Builds Percona Server for MySQL 9.7 (with MySQL Router), Percona XtraBackup 9.7, Percona XtraDB Cluster 9.7 (with
+Galera and garbd) and Percona Binlog Server from source as Wolfi apk packages (melange) and assembles thirteen container
+images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
@@ -18,6 +18,7 @@ Not an official Percona image.
 | `percona-server-mysql-operator:1.3.0` | Drop-in replacement for the official `percona/percona-server-mysql-operator:1.3.0` (Percona Operator for MySQL): the manager and the helpers its init container copies into every pod, built from the `v1.3.0` tag. |
 | `percona-xtradb-cluster-operator:1.20.0` | Drop-in replacement for the official `percona/percona-xtradb-cluster-operator:1.20.0` (Percona Operator for MySQL based on PXC): the manager and its init-container helpers, built from the `v1.20.0` tag. |
 | `percona-proxysql3:3.0` | Drop-in replacement for the official `percona/proxysql3:3.0.9-1.1` (PXC operator): ProxySQL 3.0.9 (Wolfi's `proxysql` package, same upstream release) with Percona's `proxysql-admin` tools, the same entrypoint and configuration, and the Percona Server client. |
+| `percona-binlog-server:0.4` | Drop-in replacement for `perconalab/percona-binlog-server:0.4.1`, the image the Percona Operator for MySQL uses for binlog storage and point-in-time recovery: `binlog_server` 0.4.1 streaming binary logs to a local directory or S3. |
 
 ## Packages
 
@@ -44,6 +45,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-proxysql-docker-scripts` | Entrypoint, configuration and `add_*_nodes.sh` of the proxysql3 image from percona-docker; subpackage `percona-proxysql-my-print-defaults` (`my_print_defaults` alone, as the Dockerfile takes it from the server rpm) |
 | `percona-xtradb-cluster` | Percona XtraDB Cluster from one CMake build of the PXC tree (server with wsrep, the Galera submodule, garbd); subpackages `-server`, `-galera` (`libgalera_smm.so`), `-garbd`, `-client`, `-libs`, `-dev`, `-test`, `-icu-data-files`, `-scripts`, `-dbg` |
 | `percona-xtradb-cluster-docker-scripts` | Entrypoint and dockerdir of the PXC image from percona-docker (Wolfi-patched); `-docker-config` (my.cnf, node.cnf), `-backup-scripts` (the backup image's scripts) |
+| `percona-binlog-server` | Percona Binlog Server (`binlog_server`), with Boost and the AWS SDK for C++ built in statically; subpackage `-dbg` |
+| `percona-binlog-server-docker-scripts` | percona-docker's LICENSE for the binlog server image and the RHEL CA bundle path the operator mounts |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -72,6 +75,7 @@ matches the apks (commit the rewritten lock file).
     scripts/build.sh percona-server-mysql-operator percona-xtradb-cluster-operator   # the operator images (Go only)
     scripts/build.sh percona-proxysql3        # only the ProxySQL image (server client, admin tools, entrypoint)
     scripts/build.sh percona-xtradb-cluster percona-xtradb-cluster-backup   # the PXC images (PXC, XtraBackup for SST)
+    scripts/build.sh percona-binlog-server    # only the binlog server image (and the server packages it links)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -275,6 +279,21 @@ it off:
 
 `percona-xtradb-cluster-backup:9.7` is the PXC operator's backup image (garbd, XtraBackup, the backup scripts); it has
 no entrypoint. garbd also ships in `percona-xtrabackup:9.7`, as in the official image.
+
+### `percona-binlog-server:0.4`: Percona Binlog Server
+
+    PBS=localhost:5000/percona-binlog-server:0.4
+
+No entrypoint (CMD is `bash`, as in the official image); the operator runs `binlog_server pull <config.json>`.
+`binlog_server` reads a JSON configuration (`/etc/percona-binlog-server/main_config.json` is the upstream example):
+the source server and a user with `REPLICATION SLAVE`, GTID replication, and a storage, `file:///<dir>` or S3
+(`s3://key:secret@bucket.region/prefix`, or `http[s]://key:secret@host:port/bucket/prefix` for MinIO and others).
+With a GTID-enabled server `ps` on the docker network `db` and a config in `./pbs.json`:
+
+    docker run -d --name pbs --network db -v $PWD/pbs.json:/etc/binlog_server/config.json:ro \
+      -v pbs-data:/var/lib/binlog-server/data $PBS binlog_server pull /etc/binlog_server/config.json
+    docker run --rm -v $PWD/pbs.json:/etc/binlog_server/config.json:ro -v pbs-data:/var/lib/binlog-server/data \
+      $PBS binlog_server list /etc/binlog_server/config.json
 
 ## Official image vs this build
 
