@@ -103,3 +103,15 @@ official_pxb_image: "docker.io/percona/percona-xtrabackup@sha256:07e883d6aab312b
 official_router_image: "docker.io/percona/percona-mysql-router@sha256:a1ecf51e0688b8a6e5e9b4f344d6f255585836a4f64e0ccd4a02df9cdf773296"
 # previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
 official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"
+
+# --- Percona Orchestrator (github.com/percona/orchestrator), the official percona/percona-orchestrator image ---
+# Tag of the official image's rpm (percona-orchestrator 3.2.6-25); peeled commit (tag object e255d1ea00ff...).
+# v3.2.6-23, -24 and -25 point at the same commit (rebuilds with newer Go).
+orc_tag: "v3.2.6-25"
+orc_commit: "820293a980db02e6c070b890b7139fdaf566dec3"
+orc_version: "3.2.6"
+orc_release: "25"
+# Go series: go.mod says `go 1.26.5`; Percona's orchestrator_builder.sh (percona/orchestrator-packaging) installs 1.26.10
+orc_go: "1.26"
+# percona/percona-orchestrator:3.2.6-25 == 3.2.6 == 3.2 == 3 (index digest, 2026-11-17)
+official_orc_image: "docker.io/percona/percona-orchestrator@sha256:c313b78f1837a7ae8cb1e35861e6b9fd7c01de96ca735c2580db31696ec4ca52"
