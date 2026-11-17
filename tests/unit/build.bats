@@ -48,12 +48,14 @@ have_apks() {
 @test "fresh tree: every package and image is planned, a dry run calls nothing" {
   run "$S" -n
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 10 ]
+  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 12 ]
   [[ $output == *"BUILD package percona-server (no $T/repo/x86_64/percona-server-9.7.2.2-r0.apk)"* ]]
   [[ $output == *"BUILD image percona-server (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-server-dev (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-xtrabackup (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-mysql-router (no lock file (first build))"* ]]
+  [[ $output == *"BUILD image percona-haproxy (no lock file (first build))"* ]]
+  [[ $output == *"BUILD image percona-fluentbit (no lock file (first build))"* ]]
   [ ! -e "$T/calls" ]
 }
 
@@ -70,16 +72,20 @@ have_apks() {
   [ "${lines[8]}" = "pkg-percona-xtrabackup RELOCK=" ]
   [ "${lines[11]}" = "pkg-percona-xtrabackup-docker-scripts RELOCK=" ]
   [ "${lines[12]}" = "pkg-percona-mysql-router-docker-scripts RELOCK=" ]
-  [ "${lines[13]}" = "registry-up RELOCK=" ]
-  [ "${lines[14]}" = "image-percona-server RELOCK=" ]
-  [ "${lines[15]}" = "image-percona-server-dev RELOCK=" ]
-  [ "${lines[16]}" = "image-percona-xtrabackup RELOCK=" ]
-  [ "${lines[17]}" = "image-percona-mysql-router RELOCK=" ]
+  [ "${lines[13]}" = "pkg-percona-haproxy-docker-scripts RELOCK=" ]
+  [ "${lines[14]}" = "pkg-percona-fluentbit-docker-scripts RELOCK=" ]
+  [ "${lines[15]}" = "registry-up RELOCK=" ]
+  [ "${lines[16]}" = "image-percona-server RELOCK=" ]
+  [ "${lines[17]}" = "image-percona-server-dev RELOCK=" ]
+  [ "${lines[18]}" = "image-percona-xtrabackup RELOCK=" ]
+  [ "${lines[19]}" = "image-percona-mysql-router RELOCK=" ]
+  [ "${lines[20]}" = "image-percona-haproxy RELOCK=" ]
+  [ "${lines[21]}" = "image-percona-fluentbit RELOCK=" ]
   [ -s "$T/stamps/pkg-percona-server" ] && [ -s "$T/stamps/image-percona-xtrabackup" ]
   rm "$T/calls"
   run "$S"
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^SKIP' <<< "$output")" -eq 14 ]
+  [ "$(grep -c '^SKIP' <<< "$output")" -eq 18 ]
   run cat "$T/calls"
   [ "$output" = "registry-up RELOCK=" ]
 }
@@ -93,7 +99,7 @@ have_apks() {
   [[ $output == *"SKIP  package percona-telemetry-agent (up to date)"* ]]
   [[ $output == *"SKIP  package percona-xtrabackup-docker-scripts (up to date)"* ]]
   for p in v8 percona-server percona-mysql-shell percona-xtrabackup percona-server-docker-scripts \
-    percona-mysql-router-docker-scripts; do
+    percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts; do
     [[ $output == *"BUILD package $p (inputs changed)"* ]]
   done
 }
@@ -136,6 +142,25 @@ have_apks() {
   grep -q "^http://localhost:5000/v2/percona-mysql-router/manifests/sha256:" "$T/curl.log"
 }
 
+@test "haproxy and fluentbit: the server (client) and their own scripts only; their own registry repositories" {
+  run "$S" -n percona-haproxy percona-fluentbit
+  [[ $output == *"BUILD package percona-server ("* ]]
+  [[ $output == *"BUILD package percona-haproxy-docker-scripts ("* ]]
+  [[ $output == *"BUILD package percona-fluentbit-docker-scripts ("* ]]
+  [[ $output == *"BUILD image percona-haproxy ("* ]]
+  [[ $output == *"BUILD image percona-fluentbit ("* ]]
+  for p in percona-mysql-shell percona-telemetry-agent xtrabackup router "image percona-server"; do
+    [[ $output != *"$p"* ]]
+  done
+  have_apks
+  "$S" percona-haproxy percona-fluentbit > /dev/null 2>&1
+  run "$S" -n percona-haproxy percona-fluentbit
+  [[ $output == *"SKIP  image percona-haproxy (up to date)"* ]]
+  [[ $output == *"SKIP  image percona-fluentbit (up to date)"* ]]
+  grep -q "^http://localhost:5000/v2/percona-haproxy/manifests/sha256:" "$T/curl.log"
+  grep -q "^http://localhost:5000/v2/percona-fluentbit/manifests/sha256:" "$T/curl.log"
+}
+
 @test "xtrabackup only: the server packages it links against, no -dev extras; its own registry repository" {
   run "$S" -n percona-xtrabackup
   [[ $output == *"BUILD package percona-server ("* ]]
@@ -173,7 +198,7 @@ EOF
   STUB_CURL_RC=22 run "$S" -n --images-only
   [[ $output == *"BUILD image percona-server (digest not in localhost:5000)"* ]]
   run "$S" -n -f
-  [ "$(grep -c '(--force)' <<< "$output")" -eq 14 ]
+  [ "$(grep -c '(--force)' <<< "$output")" -eq 18 ]
 }
 
 @test "bad arguments are rejected" {

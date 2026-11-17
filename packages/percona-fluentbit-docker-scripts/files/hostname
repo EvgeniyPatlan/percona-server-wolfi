@@ -1,0 +1,12 @@
+#!/bin/bash
+# hostname [args]: net-tools' /usr/bin/hostname, plus -I / --all-ip-addresses of the hostname package of the official
+# (UBI) image, which postrotate-mysql.sh and the operators' postrotate scripts call (`hostname -I | awk '{print $1}'`).
+# Wolfi has no such hostname (busybox's and net-tools' have no -I). As upstream: every address of every interface
+# except loopback and IPv6 link-local ones, in interface order, each followed by a space, then a newline.
+set -euo pipefail
+if (($# == 1)) && [[ $1 == -I || $1 == --all-ip-addresses ]]; then
+  ip -o addr show | awk '$2 != "lo" && ($3 == "inet" || $3 == "inet6") && $4 !~ /^fe80:/ {
+    sub(/\/.*/, "", $4); printf "%s ", $4 } END { print "" }'
+  exit 0
+fi
+exec "${HOSTNAME_BIN:-/usr/bin/hostname}" "$@"

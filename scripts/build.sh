@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # build.sh [options] [image...]: build the apks and the images, skipping whatever is already up to date.
-# Images: percona-server (distroless), percona-server-dev, percona-xtrabackup, percona-mysql-router (default: all).
+# Images: percona-server (distroless), percona-server-dev, percona-xtrabackup, percona-mysql-router, percona-haproxy,
+# percona-fluentbit (default: all).
 # Only the packages the chosen images need are built: the distroless image does not need percona-mysql-shell or
 # percona-telemetry-agent, the xtrabackup image needs percona-server (libs, client) but not the -dev extras, the router
-# image needs percona-server (the router is one of its subpackages) and percona-mysql-shell.
+# image needs percona-server (the router is one of its subpackages) and percona-mysql-shell; the haproxy and fluentbit
+# images need percona-server (its client) and their docker-scripts package.
 #
 # A package is rebuilt when its main apk is missing from out/repo, when it has never been built by this script, or when
 # its inputs changed since the last successful build: the rendered recipe (so every pin of the version file it uses),
@@ -28,26 +30,29 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/common.sh"
 cd "$here/.."
 
-usage() { die "usage: build.sh [-n|--dry-run] [-f|--force] [--packages-only|--images-only] [--dev-keys] [percona-server] [percona-server-dev] [percona-xtrabackup] [percona-mysql-router]"; }
+usage() { die "usage: build.sh [-n|--dry-run] [-f|--force] [--packages-only|--images-only] [--dev-keys] [percona-server] [percona-server-dev] [percona-xtrabackup] [percona-mysql-router] [percona-haproxy] [percona-fluentbit]"; }
 
 # Build order (mk/packages.mk PACKAGES; tests/unit/build.bats checks they agree) and the local packages each one is
 # built against.
-ORDER=(mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtrabackup percona-telemetry-agent percona-server-docker-scripts percona-xtrabackup-docker-scripts percona-mysql-router-docker-scripts)
+ORDER=(mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtrabackup percona-telemetry-agent percona-server-docker-scripts percona-xtrabackup-docker-scripts percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts)
 declare -A DEPS=(
   [mecab]="" [mecab-ipadic]="mecab" [v8]="" [percona-server]="mecab mecab-ipadic v8"
   [percona-mysql-shell]="percona-server" [percona-xtrabackup]="percona-server" [percona-telemetry-agent]=""
   [percona-server-docker-scripts]="percona-server" [percona-xtrabackup-docker-scripts]=""
   [percona-mysql-router-docker-scripts]="percona-server"
+  [percona-haproxy-docker-scripts]="percona-server" [percona-fluentbit-docker-scripts]="percona-server"
 )
 declare -A IMAGE_PKGS=(
   [percona-server]="mecab mecab-ipadic v8 percona-server percona-server-docker-scripts"
   [percona-server-dev]="mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-telemetry-agent percona-server-docker-scripts"
   [percona-xtrabackup]="mecab mecab-ipadic v8 percona-server percona-xtrabackup percona-xtrabackup-docker-scripts"
   [percona-mysql-router]="mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-mysql-router-docker-scripts"
+  [percona-haproxy]="mecab mecab-ipadic v8 percona-server percona-haproxy-docker-scripts"
+  [percona-fluentbit]="mecab mecab-ipadic v8 percona-server percona-fluentbit-docker-scripts"
 )
 # registry repository of each image (the -dev image is a tag of percona-server)
 declare -A IMAGE_REPO=([percona-server]=percona-server [percona-server-dev]=percona-server [percona-xtrabackup]=percona-xtrabackup
-  [percona-mysql-router]=percona-mysql-router)
+  [percona-mysql-router]=percona-mysql-router [percona-haproxy]=percona-haproxy [percona-fluentbit]=percona-fluentbit)
 
 dry=0 force=0 do_pkgs=1 do_images=1
 images=()
@@ -58,14 +63,14 @@ while (($#)); do
     --packages-only) do_images=0 ;;
     --images-only) do_pkgs=0 ;;
     --dev-keys) export KEY_DIR=$HOME/.config/ps-wolfi-dev ;;
-    -h | --help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    percona-server | percona-server-dev | percona-xtrabackup | percona-mysql-router) images+=("$1") ;;
+    -h | --help) sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    percona-server | percona-server-dev | percona-xtrabackup | percona-mysql-router | percona-haproxy | percona-fluentbit) images+=("$1") ;;
     *) usage ;;
   esac
   shift
 done
 ((do_pkgs || do_images)) || die "--packages-only and --images-only exclude each other"
-((${#images[@]})) || images=(percona-server percona-server-dev percona-xtrabackup percona-mysql-router)
+((${#images[@]})) || images=(percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-haproxy percona-fluentbit)
 
 # shellcheck source=lib/keys.sh
 . "$here/lib/keys.sh"

@@ -1,0 +1,115 @@
+package:
+  name: percona-fluentbit-docker-scripts
+  version: "@@fluentbit_version@@"
+  epoch: 0
+  description: Entrypoint, Fluent Bit and logrotate configs of the official percona/fluentbit image (percona-docker fluentbit/dockerdir at a pinned commit, unpatched)
+  copyright:
+    - license: GPL-2.0-only
+  # What the scripts call: /bin/sh is bash in the official (UBI) image and the entrypoint relies on it (`[[ ]]`,
+  # `+=`, `source`), hence bash-binsh; supercronic + logrotate (logrotate mode), find -mtime -delete (findutils),
+  # `hostname -I` (files/hostname: net-tools' hostname plus -I through iproute2's ip; neither busybox's nor net-tools'
+  # hostname has -I), timeout (coreutils) and /usr/bin/mysql (postrotate-mysql.sh).
+  # fluent-bit itself is chosen by the image.
+  dependencies:
+    runtime:
+      - bash
+      - bash-binsh
+      - busybox
+      - coreutils
+      - findutils
+      - grep
+      - sed
+      - net-tools
+      - iproute2
+      - logrotate
+      - supercronic
+      - percona-server-client
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+
+pipeline:
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # fluentbit/Dockerfile: COPY dockerdir /; mkdir -p /etc/fluentbit; chown -R 1001:1001 /etc/fluentbit /opt/percona
+  # /usr/local/bin; chmod -R 775 /opt/percona; COPY LICENSE /licenses/LICENSE.Dockerfile. The dockerdir files need no Wolfi change.
+  # The fluent-bit rpm installs /opt/fluent-bit/bin/fluent-bit (the entrypoint adds that directory to PATH); Wolfi's
+  # binary is /usr/bin/fluent-bit, so the rpm path is kept as a symlink to it.
+  - name: Install
+    runs: |
+      set -eu
+      s=pd-src/fluentbit/dockerdir d="${{targets.destdir}}"
+      # the file set this recipe was written for; a new upstream file must be looked at, not silently shipped
+      test "$(cd "$s" && find . -type f | sort | tr '\n' ' ')" = "./entrypoint.sh ./etc/fluentbit/custom/defaul.conf ./etc/fluentbit/fluentbit.conf ./etc/fluentbit/fluentbit_pxc.conf ./etc/fluentbit/parsers_multiline.conf ./opt/percona/logrotate/logrotate-mysql.conf ./usr/local/bin/postrotate-mysql.sh "
+      install -Dm0755 "$s/entrypoint.sh" "$d/entrypoint.sh"
+      for f in fluentbit.conf fluentbit_pxc.conf parsers_multiline.conf custom/defaul.conf; do
+        install -Dm0644 "$s/etc/fluentbit/$f" "$d/etc/fluentbit/$f"
+      done
+      install -Dm0644 "$s/opt/percona/logrotate/logrotate-mysql.conf" "$d/opt/percona/logrotate/logrotate-mysql.conf"
+      install -Dm0755 "$s/usr/local/bin/postrotate-mysql.sh" "$d/usr/local/bin/postrotate-mysql.sh"
+      # Wolfi-only: `hostname -I` for postrotate-mysql.sh (first on PATH; everything else goes to net-tools' hostname)
+      install -Dm0755 files/hostname "$d/usr/local/bin/hostname"
+      chmod -R 775 "$d/opt/percona"
+      # /usr/local/bin itself is wolfi-baselayout's; the image gives it to 1001 (apko paths)
+      chown -R 1001:1001 "$d/etc/fluentbit" "$d/opt/percona" "$d/usr/local/bin/postrotate-mysql.sh" \
+        "$d/usr/local/bin/hostname"
+      install -d -m0755 "$d/opt/fluent-bit/bin"
+      ln -s /usr/bin/fluent-bit "$d/opt/fluent-bit/bin/fluent-bit"
+      install -Dm0644 pd-src/fluentbit/LICENSE "$d/licenses/LICENSE.Dockerfile"
+      # `melange test` installs without applying owners/modes, so they are asserted here, on the tree that becomes the apk
+      test "$(stat -c '%u:%g' "$d/etc/fluentbit" "$d/opt/percona/logrotate" "$d/usr/local/bin/postrotate-mysql.sh" | sort -u)" = 1001:1001
+      test "$(stat -c '%a' "$d/opt/percona/logrotate/logrotate-mysql.conf")" = 775
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - fluent-bit-@@fluentbit_series@@=@@fluentbit_apk_version@@
+        - percona-fluentbit-docker-scripts
+  pipeline:
+    - name: scripts and tools
+      runs: |
+        set -eu
+        test "$(readlink -f /bin/sh)" = /usr/bin/bash
+        for f in /entrypoint.sh /usr/local/bin/postrotate-mysql.sh; do
+          test -x "$f"
+          bash -n "$f"
+        done
+        test -f /licenses/LICENSE.Dockerfile
+        /opt/fluent-bit/bin/fluent-bit --version | grep -q 'v@@fluentbit_version@@'
+        command -v supercronic logrotate mysql timeout find
+        test "$(command -v hostname)" = /usr/local/bin/hostname
+        hostname -I
+        test "$(hostname -s)" = "$(/usr/bin/hostname -s)"
+    - name: shipped configs are valid
+      runs: |
+        set -eu
+        LOG_DATA_DIR=/tmp POD_NAMESPASE=ns POD_NAME=pod fluent-bit --dry-run -c /etc/fluentbit/fluentbit.conf
+        mkdir -p /var/lib/mysql
+        logrotate -d -s /tmp/logrotate.status /opt/percona/logrotate/logrotate-mysql.conf > out 2>&1 || { cat out; exit 1; }
+        if grep -i '^error' out; then exit 1; fi
+
+update:
+  enabled: false

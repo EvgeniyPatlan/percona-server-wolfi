@@ -1,0 +1,116 @@
+package:
+  name: percona-haproxy-docker-scripts
+  version: "@@haproxy_version@@"
+  epoch: 0
+  description: Entrypoint, configs and check scripts of the official percona/haproxy image (percona-docker haproxy/dockerdir at a pinned commit, unpatched)
+  copyright:
+    - license: GPL-2.0-only
+  # What the scripts call: /bin/sh is bash in the official (UBI) image and the entrypoint relies on it (`+=`,
+  # `source`), hence bash-binsh; `date +%3N` and `sort --version-sort` (coreutils), grep -A, sed, socat (stats and
+  # master sockets), /usr/bin/mysql (check_pxc.sh, liveness/readiness checks). haproxy itself is chosen by the image.
+  dependencies:
+    runtime:
+      - bash
+      - bash-binsh
+      - busybox
+      - coreutils
+      - grep
+      - sed
+      - socat
+      - percona-server-client
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+
+pipeline:
+  # Dockerfile: cp /usr/share/licenses/percona-haproxy/LICENSE /licenses/LICENSE.haproxy (the same file, sha256-pinned;
+  # Wolfi's haproxy package ships no license file)
+  - uses: fetch
+    with:
+      uri: @@haproxy_license_url@@
+      expected-sha256: @@haproxy_license_sha256@@
+      extract: false
+
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # haproxy/Dockerfile: COPY dockerdir /; mkdir -p /etc/haproxy/pxc /etc/haproxy-custom; chown -R 1001:1001 /etc/haproxy
+  # /etc/haproxy/pxc /etc/haproxy-custom; chown 1001:1001 haproxy.cfg haproxy-global.cfg check_pxc.sh;
+  # COPY LICENSE /licenses/LICENSE.Dockerfile. The later COPY dockerdir leaves /etc/haproxy itself root-owned in the
+  # official image (checked), so it is root's here too. No file needs a Wolfi change once /bin/sh is bash (bash-binsh).
+  - name: Install
+    runs: |
+      set -eu
+      s=pd-src/haproxy/dockerdir d="${{targets.destdir}}"
+      # the file set this recipe was written for; a new upstream file must be looked at, not silently shipped
+      test "$(cd "$s" && find . -type f | sort | tr '\n' ' ')" = "./entrypoint.sh ./etc/haproxy/haproxy-global.cfg ./etc/haproxy/haproxy.cfg ./usr/bin/add_pxc_nodes.sh ./usr/local/bin/check_pxc.sh ./usr/local/bin/liveness-check.sh ./usr/local/bin/readiness-check.sh "
+      install -Dm0755 "$s/entrypoint.sh" "$d/entrypoint.sh"
+      install -Dm0644 "$s/etc/haproxy/haproxy.cfg" "$d/etc/haproxy/haproxy.cfg"
+      install -Dm0644 "$s/etc/haproxy/haproxy-global.cfg" "$d/etc/haproxy/haproxy-global.cfg"
+      install -Dm0755 "$s/usr/bin/add_pxc_nodes.sh" "$d/usr/bin/add_pxc_nodes.sh"
+      for f in check_pxc.sh liveness-check.sh readiness-check.sh; do
+        install -Dm0755 "$s/usr/local/bin/$f" "$d/usr/local/bin/$f"
+      done
+      install -d -m0755 "$d/etc/haproxy/pxc" "$d/etc/haproxy-custom"
+      chown 1001:1001 "$d/etc/haproxy/pxc" "$d/etc/haproxy-custom" \
+        "$d/etc/haproxy/haproxy.cfg" "$d/etc/haproxy/haproxy-global.cfg" "$d/usr/local/bin/check_pxc.sh"
+      install -Dm0644 pd-src/haproxy/LICENSE "$d/licenses/LICENSE.Dockerfile"
+      install -Dm0644 LICENSE "$d/licenses/LICENSE.haproxy"
+      # `melange test` installs without applying owners, so ownership is asserted here, on the tree that becomes the apk
+      test "$(stat -c '%u:%g' "$d/etc/haproxy/pxc" "$d/etc/haproxy-custom" "$d/usr/local/bin/check_pxc.sh" | sort -u)" = 1001:1001
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - haproxy-@@haproxy_series@@-nocaps=@@haproxy_apk_version@@
+        - percona-haproxy-docker-scripts
+  pipeline:
+    - name: scripts
+      runs: |
+        set -eu
+        test "$(readlink -f /bin/sh)" = /usr/bin/bash
+        for f in /entrypoint.sh /usr/bin/add_pxc_nodes.sh /usr/local/bin/check_pxc.sh /usr/local/bin/liveness-check.sh \
+          /usr/local/bin/readiness-check.sh; do
+          test -x "$f"
+          bash -n "$f"
+        done
+        test -f /licenses/LICENSE.Dockerfile
+        grep -q "HAPROXY's license" /licenses/LICENSE.haproxy
+        mysql --version
+        haproxy -v | grep -q '@@haproxy_version@@'
+    - name: shipped config and a generated backend list pass haproxy -c
+      runs: |
+        set -eu
+        haproxy -c -f /etc/haproxy/haproxy-global.cfg -f /etc/haproxy/haproxy.cfg
+        # add_pxc_nodes.sh reads the peer list on stdin (the operator's peer-list), writes /etc/haproxy/pxc/haproxy.cfg
+        # and checks it with haproxy -c; the node-0 check fails here (no server), so no socket command is sent.
+        printf '%s\n' c-pxc-0.c-pxc.ns c-pxc-1.c-pxc.ns c-pxc-2.c-pxc.ns | /usr/bin/add_pxc_nodes.sh > out 2>&1 || { cat out; exit 1; }
+        grep -q 'number of available nodes are 3' out
+        grep -q 'server c-pxc-0 c-pxc-0.c-pxc.ns:3306 .* on-marked-up shutdown-backup-sessions' /etc/haproxy/pxc/haproxy.cfg
+        grep -q 'server c-pxc-2 c-pxc-2.c-pxc.ns:33062 .* backup' /etc/haproxy/pxc/haproxy.cfg
+        test "$(cat /etc/haproxy/pxc/AVAILABLE_NODES)" = 3
+
+update:
+  enabled: false

@@ -46,6 +46,22 @@ ROUTER_IMAGE ?= $(REGISTRY)/percona-mysql-router:9.7
 test-router: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) ROUTER_IMAGE=$(ROUTER_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/router.bats)
 
+# HAProxy image: versions and the tools of the official and operator scripts, add_pxc_nodes.sh + haproxy -c on a stub
+# peer list, the entrypoint running haproxy (master socket, stats socket, /metrics), liveness-check.sh against a server
+# from the -dev image (docker only, ~2 min).
+HAPROXY_IMAGE ?= $(REGISTRY)/percona-haproxy:3.4
+.PHONY: test-haproxy
+test-haproxy: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) HAPROXY_IMAGE=$(HAPROXY_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/haproxy.bats)
+
+# Log collector image: versions and tools, fluent-bit --dry-run on the shipped config, the entrypoint tailing a log to
+# stdout, logrotate mode under supercronic (also as an arbitrary UID), postrotate-mysql.sh against a server from the
+# -dev image (docker only, ~2 min).
+FLUENTBIT_IMAGE ?= $(REGISTRY)/percona-fluentbit:5.0
+.PHONY: test-fluentbit
+test-fluentbit: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) FLUENTBIT_IMAGE=$(FLUENTBIT_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/fluentbit.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).
