@@ -10,8 +10,8 @@ reference sections below it explain each component, what to send back when it fa
     make phase-a                  # sources vendor-v8 packages repro-all verify-repro
     make phase-b                  # registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh
                                   #   test-xtrabackup test-router test-haproxy test-fluentbit test-orchestrator
-                                  #   test-operators test-proxysql test-pxc test-binlog-server test-toolkit scan sign
-                                  #   verify-sign
+                                  #   test-operators test-proxysql test-pxc test-binlog-server test-toolkit
+                                  #   test-pmm-client scan sign verify-sign
     make all                      # phase-a phase-b, then report (always, even after a failure)
     make mtr-nightly              # not part of `all`: upstream MTR suites, run separately (hours)
     scripts/build.sh              # incremental: only out-of-date packages/images (-n: plan only); not for releases
@@ -489,7 +489,7 @@ config, so after any change to a template or to `versions/9.7.yaml` values it us
 too: a reproducible rebuild keeps the lock valid, a changed apk needs a relock.
 
 Reproducibility: `make repro-images` (in `phase-b` right after `images`, before the tests, scanning and signing) runs
-`scripts/repro-images.sh`: a second build of all fourteen from the lock files the first build used (`RELOCK` cleared; a lock
+`scripts/repro-images.sh`: a second build of all fifteen from the lock files the first build used (`RELOCK` cleared; a lock
 file that changes fails), with a fresh apko cache and separate output dirs (`out/repro-images/`), published to
 `localhost:5000/repro/...` so the first build's tags, digests and SBOMs stay untouched, then compares each index digest
 with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line must be `OK`. Build date =
@@ -497,7 +497,7 @@ with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line 
 
 Host checks (record in the task report):
 
-1. `make repro-images`: fourteen `OK` lines.
+1. `make repro-images`: fifteen `OK` lines.
 2. Distroless: `apko-build.sh percona-server` did not stop with "must not contain" (a runtime dependency pulling in a
    shell, mysqlsh or the agent) or "is distroless but the image contains" (a shell/apk file in the image). If it did,
    send the lock file's package list and the message.
@@ -801,6 +801,26 @@ tool's version (42), DBD::mysql over TCP + TLS to a server from the -dev image, 
 volume: heartbeats are written over the socket and the container exits 0 on `docker stop`. Tags:
 `percona-toolkit:3.7` and `:3.7.1-4` (the toolkit's own version line, not the server's).
 
+## PMM client (`pmm-client`, `make test-pmm-client`)
+
+`packages/pmm-client` builds what PMM's `build/scripts/build-client-binary` (percona/pmm at `pmm_commit`, tag
+v3.10.0) puts into the client tarball, each Go component at the commit of the release (`pmm_*` keys of the version
+file: the gitlinks of Percona-Lab/pmm-submodules v3.10.0, and vmagent/nomad/redis_exporter from `build/scripts/vars`),
+with the Go commands of each upstream Makefile target and the version stamps the official binaries print. One build,
+twelve repositories (module downloads need the network; nomad is the largest, about 160 MB). Subpackages install
+`/usr/local/percona/pmm` as `install_tarball` does (owner 1002:0). `pmm-client-tools` depends on `percona-toolkit`
+(pt-summary, pt-mysql-summary): build that package first, or the `melange test` of `pmm-client` cannot resolve it.
+
+    make pkg-pmm-client
+    make test-pmm-client IMAGE=localhost:5000/percona-server:9.7-dev PMM_CLIENT_IMAGE=localhost:5000/pmm-client:3 report
+
+`tests/image/pmm-client.bats` (5 tests, about 3 minutes, docker only): every binary's version; user 1002, working
+directory, ownership of the layout and the tools the official Dockerfile copies (jq, tar, curl, sed, grep, awk, mysql,
+perl); the entrypoint with `PMM_AGENT_SETUP=1` against an unreachable server (setup fails with "Failed to register
+pmm-agent on PMM Server", no panic) and `pmm-admin status` without an agent; node_exporter, vmagent, postgres_exporter
+and valkey_exporter serving `/metrics`; mysqld_exporter scraping a server started from the -dev image (`mysql_up 1`).
+The same commands were checked against the official `percona/pmm-client:3.10.0`.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime
@@ -888,7 +908,7 @@ Before and during phase A:
 Phase B:
 
 - [ ] `make phase-b`; then **commit `images/*.lock.json`** created by the first `make images` (Images). Its
-  `repro-images` step printed fourteen `OK` lines.
+  `repro-images` step printed fifteen `OK` lines.
 - [ ] Hard pass/fail from the Images section: the edited `/etc/my.cnf` wins over the RPM copy (both commands print
   `PASS`); distroless build did not stop with a "must not contain" message.
 - [ ] `make test-image test-upgrade test-mysqlsh test-xtrabackup test-router test-orchestrator` green; no `ALL-SKIPPED` line; skipped upgrade cases (server refuses the jump)

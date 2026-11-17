@@ -110,6 +110,13 @@ TOOLKIT_IMAGE ?= $(REGISTRY)/percona-toolkit:3.7
 test-toolkit: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) TOOLKIT_IMAGE=$(TOOLKIT_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/toolkit.bats)
 
+# PMM client image: every binary's version, pmm-agent setup failing cleanly without a server, the layout and user, and
+# the exporters serving /metrics (mysqld_exporter against a server from the -dev image; docker only, ~3 min).
+PMM_CLIENT_IMAGE ?= $(REGISTRY)/pmm-client:3
+.PHONY: test-pmm-client
+test-pmm-client: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) PMM_CLIENT_IMAGE=$(PMM_CLIENT_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/pmm-client.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).

@@ -16,7 +16,8 @@
 # each, as the official operator images); percona-proxysql3:<proxysql series>, :<proxysql_version>;
 # percona-xtradb-cluster and percona-xtradb-cluster-backup:<series>, :<pxc_version>-<pxc_release>.<pxc_rpm_release>;
 # percona-binlog-server:<pbs major.minor>, :<pbs_version>-<pbs_release>;
-# percona-toolkit:<pt series>, :<pt_version>-<pt_release> (its own version line, e.g. 3.7 and 3.7.1-4).
+# percona-toolkit:<pt series>, :<pt_version>-<pt_release> (its own version line, e.g. 3.7 and 3.7.1-4);
+# pmm-client:<major>, :<pmm_version> (as the official percona/pmm-client:3 / :3.10.0).
 # Reproducible inputs: build date from source_date_epoch, VCS autodetection off, the revision annotation is the last
 # commit that touched the build inputs or images/*.tmpl (<sha>-dirty when those have uncommitted changes; RELEASE=1
 # refuses that unless ALLOW_DIRTY=1).
@@ -28,7 +29,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/keys.sh"
 cd "$here/.."
 
-usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator|percona-server-mysql-operator|percona-xtradb-cluster-operator|percona-proxysql3|percona-xtradb-cluster|percona-xtradb-cluster-backup|percona-binlog-server|percona-toolkit> [--no-publish]"; }
+usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator|percona-server-mysql-operator|percona-xtradb-cluster-operator|percona-proxysql3|percona-xtradb-cluster|percona-xtradb-cluster-backup|percona-binlog-server|percona-toolkit|pmm-client> [--no-publish]"; }
 (($#)) || usage
 name=$1
 shift
@@ -55,6 +56,7 @@ pxc_full=$(v pxc_version)-$(v pxc_release).$(v pxc_rpm_release)
 # The haproxy and fluentbit images: no server, no mysqlsh, no telemetry agent, no other image's scripts; the haproxy
 # image takes the -nocaps haproxy only (the default build has a file capability, see its template).
 # The orchestrator image has no server, mysqlsh, telemetry agent or other image's scripts.
+# The PMM client image has no server, mysqlsh, telemetry agent or docker scripts (only the client and the toolkit).
 # PXC images: no Percona Server server/library packages (the PXC ones ship the same files), no mysqlsh, no other
 # image's scripts; the backup image has no PXC server and no telemetry agent.
 ps_pkgs='percona-server-(server|libs|client|icu-data-files|dev|scripts|test|rocksdb|js|docker-config)'
@@ -114,6 +116,9 @@ case $name in
   # toolkit: Perl and shells are what the image is for; no server, no mysqlsh, no telemetry agent, no other image's scripts
   percona-toolkit) repo_name=percona-toolkit suffix='' full=$(v pt_version)-$(v pt_release) series=$(v pt_version | cut -d. -f1-2)
     forbid="$dev_only|percona-server-server|percona-server-docker-scripts|percona-xtrabackup-docker-scripts"
+    forbid+="|$(others_scripts '')" ;;
+  pmm-client) repo_name=pmm-client suffix='' full=$(v pmm_version) series=$(v pmm_version | cut -d. -f1)
+    forbid="$dev_only|percona-server-server|percona-server-docker-scripts|percona-xtrabackup-docker-scripts|percona-mysql-router"
     forbid+="|$(others_scripts '')" ;;
   *) die "unknown image: $name" ;;
 esac

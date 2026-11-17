@@ -33,7 +33,7 @@ PACKAGES := mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtr
   percona-proxysql-admin percona-proxysql-docker-scripts \
   percona-xtradb-cluster percona-xtradb-cluster-docker-scripts \
   percona-binlog-server percona-binlog-server-docker-scripts \
-  perl-dbd-mysql percona-toolkit
+  perl-dbd-mysql percona-toolkit pmm-client
 
 .PHONY: packages $(addprefix pkg-,$(PACKAGES))
 

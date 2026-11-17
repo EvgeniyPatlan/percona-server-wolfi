@@ -28,7 +28,7 @@ include mk/supply.mk
 REPRO ?= 1
 .NOTPARALLEL:
 phase-a: sources git-mirrors vendor-v8 packages $(if $(filter 0,$(REPRO)),,repro-all verify-repro)
-phase-b: registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh test-xtrabackup test-router test-haproxy test-fluentbit test-orchestrator test-operators test-proxysql test-pxc test-binlog-server test-toolkit scan sign verify-sign
+phase-b: registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh test-xtrabackup test-router test-haproxy test-fluentbit test-orchestrator test-operators test-proxysql test-pxc test-binlog-server test-toolkit test-pmm-client scan sign verify-sign
 # `all` always produces the report, even after a failure, and exits with the original status.
 all:
 	@$(MAKE) phase-a phase-b; rc=$$?; $(MAKE) report; exit $$rc

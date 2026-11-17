@@ -9,8 +9,8 @@ Wolfi itself ships `percona-server-8.4` (8.4.2), `percona-server-9.1`, `percona-
 
 Done in this repository: Percona Server 9.7 (`percona-server`, plus `v8`, `mecab`, `mecab-ipadic`), MySQL Shell,
 the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); Orchestrator 3.2.6 (item 3); HAProxy (item 4); Percona Toolkit 3.7.1 (item 5); Percona Binlog Server 0.4.1 (item 6); the log collector (item 7); the operator images (item 8: `percona-server-mysql-operator` 1.3.0, `percona-xtradb-cluster-operator` 1.20.0); Percona XtraDB
-Cluster 9.7 with Galera and garbd (item 9); images `percona-server:9.7`,
-`percona-server:9.7-dev`, `percona-xtrabackup:9.7`, `percona-mysql-router:9.7`, `percona-orchestrator:3.2.6`, `percona-haproxy:3.4`, `percona-binlog-server:0.4`, `percona-toolkit:3.7`, `percona-fluentbit:5.0`, `percona-xtradb-cluster:9.7` and `percona-xtradb-cluster-backup:9.7`. ProxySQL (item 10): `percona-proxysql-admin`, `percona-proxysql-docker-scripts` and image `percona-proxysql3:3.0` (ProxySQL itself from Wolfi).
+Cluster 9.7 with Galera and garbd (item 9); PMM client 3.10.0 (item 11); images `percona-server:9.7`,
+`percona-server:9.7-dev`, `percona-xtrabackup:9.7`, `percona-mysql-router:9.7`, `percona-orchestrator:3.2.6`, `percona-haproxy:3.4`, `percona-binlog-server:0.4`, `percona-toolkit:3.7`, `percona-fluentbit:5.0`, `percona-xtradb-cluster:9.7`, `percona-xtradb-cluster-backup:9.7` and `pmm-client:3`. ProxySQL (item 10): `percona-proxysql-admin`, `percona-proxysql-docker-scripts` and image `percona-proxysql3:3.0` (ProxySQL itself from Wolfi).
 
 ## Components to create
 
@@ -28,7 +28,7 @@ Effort is a rough estimate (S, M, L).
 | 8 | ~~Operator binaries~~ **done** | both operators | `percona-server-mysql-operator`, `percona-xtradb-cluster-operator` (Go) | operator images | none (only the MongoDB operator) | S each |
 | 9 | ~~Percona XtraDB Cluster 9.7~~ **done** | PXC operator | `percona-xtradb-cluster` with Galera (`galera`, `garbd`) | `percona-xtradb-cluster:9.7`, `-backup` | none | L |
 | 10 | ~~ProxySQL, Percona flavour~~ **done** | PXC operator | Wolfi `proxysql` 3.0.9 compared with Percona's `proxysql3` 3.0.9-1.1, plus the `proxysql-admin` tools | `proxysql3` | proxysql 3.0.9 | S-M |
-| 11 | PMM client | sidecar in every operator | `pmm-client`: pmm-agent, vmagent and the exporters (Go, several repositories) | `pmm-client:3` | none | L |
+| 11 | ~~PMM client~~ **done** | sidecar in every operator | `pmm-client` (pmm-agent, pmm-admin) with one subpackage per repository: vmagent, the seven exporters, valkey_exporter, nomad, the toolkit summaries (Go, 3.10.0) | `pmm-client:3` | none | L |
 
 ## Third-party pieces Wolfi does not have
 
