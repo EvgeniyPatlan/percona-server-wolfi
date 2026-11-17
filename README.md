@@ -350,6 +350,30 @@ layers; the Wolfi `percona-mysql-router:9.7` (9.7.2-2) is 444 MB / 165 MB in one
 official 712 (grype) / 720 (trivy), 25 High, none Critical, again in the RHEL base (krb5-libs, sqlite-libs, expat,
 json-glib, vim, pip); Wolfi 0 / 0.
 
+The other components (2026-11-17, same scanners and rules; official images pinned by digest in `versions/9.7.yaml`,
+CVE counts as grype / trivy, C = Critical, H = High):
+
+| Image | Official: disk / download, layers | Wolfi: disk / download | Official CVEs | Wolfi CVEs |
+|---|---|---|---|---|
+| HAProxy (`percona/haproxy:3.4.7-1`) | 355 MB / 122 MB, 10 | 149 MB / 50 MB | 568 / 589 (37 / 43 H) | 0 / 0 |
+| Fluent Bit (`percona/fluentbit:5.1.4-1`) | 566 MB / 201 MB, 10 | 202 MB / 71 MB | 640 / 657 (1 C, 45 / 49 H) | 0 / 0 |
+| Orchestrator (`3.2.6-25`) | 193 MB / 74 MB, 11 | 101 MB / 42 MB | 440 / 473 (34 / 50 H) | 0 / 0 |
+| PS operator (`1.3.0`) | 470 MB / 159 MB, 5 | 388 MB / 134 MB | 239 / 255 (1 C, 28 / 30 H) | 1 / 0 (1 H) |
+| PXC operator (`1.20.0`) | 361 MB / 145 MB, 38 | 262 MB / 114 MB | 402 / 420 (3 / 1 C, 79 / 80 H) | 11 / 0 (1 C, 9 H) |
+| ProxySQL (`proxysql3:3.0.9-1.1`) | 447 MB / 160 MB, 9 | 246 MB / 83 MB | 666 / 695 (1 C, 71 / 83 H) | 2 / 0 (1 H) |
+| PXC (`9.7.2-2.1`) | 1.40 GB / 473 MB, 19 | 480 MB / 167 MB | 702 / 752 (51 / 60 H) | 0 / 0 |
+| PXC backup (`9.7.2-pxc8.7-backup`) | 778 MB / 288 MB, 11 | 506 MB / 148 MB | 235 / 233 (1 / 0 C, 19 H) | 0 / 0 |
+| Binlog Server (`0.4.1`) | 203 MB / 77 MB, 8 | 83 MB / 31 MB | 334 / 339 (1 C, 49 H) | 0 / 0 |
+| Toolkit (`3.7.1-4`) | 433 MB / 151 MB, 7 | 318 MB / 106 MB | 565 / 581 (3 / 1 C, 73 H) | 9 / 0 (1 C, 7 H) |
+| PMM client (`3.10.0`) | 657 MB / 256 MB, 12 | 770 MB / 306 MB | 195 / 55 (12 / 0 C, 45 / 4 H) | 21 / 0 (1 C, 9 H) |
+
+Every Wolfi image is a single layer. The PXC trivy count leaves out 6628 Linux kernel CVEs that trivy matches against
+the official image's `kernel-headers` package (grype does not). What remains in the Wolfi images is in Go modules
+pinned by the upstream `go.mod` files (golang.org/x/net, klauspost/compress, go-jose, golang.org/x/text; the official
+operator, Toolkit and PMM images carry the same modules), and in ProxySQL one High without a fix plus a Medium in perl.
+Only grype reports these: trivy does not match them in the Wolfi images. The PMM client image is the one Wolfi image
+that is larger than the official one.
+
 The CVE gap is mostly the distro base: the official image's High findings are all in RHEL libraries (krb5-libs,
 sqlite-libs, expat, json-glib). Neither scanner covers Percona's own packages in either image, so CVEs in mysqld itself
 are tracked from Percona/Oracle release notes. A zero is a snapshot: the images stay clean only when rebuilt.
