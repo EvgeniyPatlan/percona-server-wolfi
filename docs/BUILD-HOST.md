@@ -613,6 +613,24 @@ call (`python3`, `curl`, `mysqlrouter_passwd`), the entrypoint refusing to start
 against a three-member InnoDB Cluster (built with the -dev image, `tests/image/gr-lib.bash` `gr_cluster`): 6446
 reaches the primary, 6447 a secondary, a write through 6446 is read through 6447, 6447 refuses writes.
 
+## Operators (`percona-server-mysql-operator`, `percona-xtradb-cluster-operator`, `make test-operators`)
+
+Both operators are built from their own repositories at the release tags (`ps_operator_*`, `pxc_operator_*` in the
+version file), not from percona-docker: each recipe runs the `go build` commands of the repository's `build/Dockerfile`
+(same ldflags, CGO off) with Wolfi's Go of the same minor version, and needs network for `go mod download` (module
+cache in melange's cache dir). The main package holds the manager (`/usr/local/bin/<operator>`), `<name>-helpers` the
+binaries and scripts the init containers copy into the database, proxy and backup pods. No dependency on the server
+packages, so they build in a few minutes on their own:
+
+    scripts/build.sh percona-server-mysql-operator percona-xtradb-cluster-operator
+    make test-operators report
+
+`tests/image/operators.bats` (6 tests, under a minute, docker only, no Kubernetes): the manager answers `-h`, uid 2 and
+the official image config (no entrypoint, `CMD /bin/bash`), every helper binary and script at its official path with
+the pinned commit stamped in, and an init-container run (`ps-init-entrypoint.sh` into `/opt/percona`,
+`pxc-init-entrypoint.sh` into `/var/lib/mysql` and `/opt/percona`, both tmpfs) that installs them owned by the
+running uid.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime

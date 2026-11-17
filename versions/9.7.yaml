@@ -103,3 +103,32 @@ official_pxb_image: "docker.io/percona/percona-xtrabackup@sha256:07e883d6aab312b
 official_router_image: "docker.io/percona/percona-mysql-router@sha256:a1ecf51e0688b8a6e5e9b4f344d6f255585836a4f64e0ccd4a02df9cdf773296"
 # previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
 official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"
+
+# --- Percona Operator for MySQL (github.com/percona/percona-server-mysql-operator), newest release 2026-11-17 ---
+ps_operator_tag: "v1.3.0"
+ps_operator_version: "1.3.0"
+# commit of the tag (lightweight tag)
+ps_operator_commit: "e399eb71e9f5fcb53314ed1bfb4b021142ffd5b9"
+# committer time of ps_operator_commit: 2026-10-28T19:35:37Z (BuildTime stamp)
+ps_operator_source_date_epoch: "1793216137"
+# main.GitBranch of the official 1.3.0 binaries (`go version -m`: -X main.GitBranch=release-1.3.0)
+ps_operator_git_branch: "release-1.3.0"
+# Wolfi go-<x.y>; build/Dockerfile: golang:1.27 (the official binaries report go1.27.3)
+ps_operator_go: "1.27"
+# percona/percona-server-mysql-operator:1.3.0 (index digest, 2026-11-17); its binaries were built from aa08a397 on
+# release-1.3.0, 17 commits before the tag (CRD/bundle, e2e and version label changes)
+official_ps_operator_image: "docker.io/percona/percona-server-mysql-operator@sha256:3ef66e4ff3ba3303833345e22871ac7c133ea052ec8ed4cd62279514c99124ef"
+
+# --- Percona Operator for MySQL based on PXC (github.com/percona/percona-xtradb-cluster-operator), newest release ---
+pxc_operator_tag: "v1.20.0"
+pxc_operator_version: "1.20.0"
+pxc_operator_commit: "1c82f375d5c51a29c01744f5dca27fa6b28991ee"
+# committer time of pxc_operator_commit: 2026-06-04T19:08:41Z
+pxc_operator_source_date_epoch: "1780600121"
+# main.GitBranch of the official 1.20.0 binaries (`go version -m`: -X main.GitBranch=release-1-20-0, the VERSION form of
+# e2e-tests/build); they were built from a87fb672 on that branch, which differs from the tag only in an e2e test
+pxc_operator_git_branch: "release-1-20-0"
+# build/Dockerfile: golang:1.26 (the official binaries report go1.26.4)
+pxc_operator_go: "1.26"
+# percona/percona-xtradb-cluster-operator:1.20.0 (index digest, 2026-11-17)
+official_pxc_operator_image: "docker.io/percona/percona-xtradb-cluster-operator@sha256:ac4d0995c71ebc31e4bb19dc17127e48365a4ba25127d70c535d2082e7feed05"

@@ -8,7 +8,7 @@ Wolfi itself ships `percona-server-8.4` (8.4.2), `percona-server-9.1`, `percona-
 3.0.9. All but ProxySQL are far behind 9.7, so they are not a base for this work.
 
 Done in this repository: Percona Server 9.7 (`percona-server`, plus `v8`, `mecab`, `mecab-ipadic`), MySQL Shell,
-the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); images `percona-server:9.7`,
+the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); the operator images (item 8: `percona-server-mysql-operator` 1.3.0, `percona-xtradb-cluster-operator` 1.20.0); images `percona-server:9.7`,
 `percona-server:9.7-dev`, `percona-xtrabackup:9.7` and `percona-mysql-router:9.7`.
 
 ## Components to create
@@ -24,7 +24,7 @@ Effort is a rough estimate (S, M, L).
 | 5 | Percona Toolkit | PS and PXC operators (toolkit image, pt-heartbeat, ...) | `percona-toolkit` (Perl) and `perl-DBD-mysql` against `percona-server-libs` | `percona-toolkit` | neither | M |
 | 6 | Percona Binlog Server | PS operator (binlog storage, PITR) | `percona-binlog-server` (C++, 0.x) | `percona-binlog-server` | none | M |
 | 7 | Log collector | both operators | Wolfi `fluent-bit` and `supercronic`, PS client, logrotate | `fluentbit` (logcollector) | fluent-bit, supercronic | S |
-| 8 | Operator binaries | both operators | `percona-server-mysql-operator`, `percona-xtradb-cluster-operator` (Go) | operator images | none (only the MongoDB operator) | S each |
+| 8 | ~~Operator binaries~~ **done** | both operators | `percona-server-mysql-operator`, `percona-xtradb-cluster-operator` (Go) | operator images | none (only the MongoDB operator) | S each |
 | 9 | Percona XtraDB Cluster 9.7 | PXC operator | `percona-xtradb-cluster` with Galera (`galera`, `garbd`) | `percona-xtradb-cluster:9.7`, `-backup` | none | L |
 | 10 | ProxySQL, Percona flavour | PXC operator | Wolfi `proxysql` 3.0.9 compared with Percona's `proxysql3` 3.0.9-1.1, plus the `proxysql-admin` tools | `proxysql3` | proxysql 3.0.9 | S-M |
 | 11 | PMM client | sidecar in every operator | `pmm-client`: pmm-agent, vmagent and the exporters (Go, several repositories) | `pmm-client:3` | none | L |

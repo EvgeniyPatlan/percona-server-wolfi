@@ -9,6 +9,8 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
 | `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
 | `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
+| `percona-server-mysql-operator:1.3.0` | Drop-in replacement for the official `percona/percona-server-mysql-operator:1.3.0` (Percona Operator for MySQL): the manager and the helpers its init container copies into every pod, built from the `v1.3.0` tag. |
+| `percona-xtradb-cluster-operator:1.20.0` | Drop-in replacement for the official `percona/percona-xtradb-cluster-operator:1.20.0` (Percona Operator for MySQL based on PXC): the manager and its init-container helpers, built from the `v1.20.0` tag. |
 
 ## Packages
 
@@ -25,6 +27,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
 | `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
 | `percona-mysql-router-docker-scripts` | Entrypoint script of the router image from percona-docker |
+| `percona-server-mysql-operator` | Percona Operator for MySQL (Go, from its repository's `build/Dockerfile`); subpackage `-helpers` (bootstrap, healthcheck, sidecar, peer-list, ... and the scripts under `/opt/percona-server-mysql-operator`) |
+| `percona-xtradb-cluster-operator` | Percona Operator for MySQL based on PXC (Go); subpackage `-helpers` (peer-list, pitr, xtrabackup sidecar, ... and the init-container scripts in `/`, `/backup`, `/logcollector`) |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -48,6 +52,7 @@ matches the apks (commit the rewritten lock file).
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
     scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
     scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
+    scripts/build.sh percona-server-mysql-operator percona-xtradb-cluster-operator   # the operator images (Go only)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 

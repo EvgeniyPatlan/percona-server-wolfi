@@ -46,6 +46,15 @@ ROUTER_IMAGE ?= $(REGISTRY)/percona-mysql-router:9.7
 test-router: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) ROUTER_IMAGE=$(ROUTER_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/router.bats)
 
+# Operator images (percona-server-mysql-operator, percona-xtradb-cluster-operator): binaries start, the files the init
+# containers copy are at the official paths, uid 2, an init-container run into a volume (docker only, no Kubernetes).
+PS_OPERATOR_IMAGE ?= $(REGISTRY)/percona-server-mysql-operator:$(shell source scripts/lib/common.sh; vars_get $(VERSION_FILE) ps_operator_version)
+PXC_OPERATOR_IMAGE ?= $(REGISTRY)/percona-xtradb-cluster-operator:$(shell source scripts/lib/common.sh; vars_get $(VERSION_FILE) pxc_operator_version)
+.PHONY: test-operators
+test-operators: $(BATS)
+	$(call logged, PS_OPERATOR_IMAGE=$(PS_OPERATOR_IMAGE) PXC_OPERATOR_IMAGE=$(PXC_OPERATOR_IMAGE) DOCKER="$(DOCKER)" \
+	  $(RUN_BATS) tests/image/operators.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).
