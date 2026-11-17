@@ -165,6 +165,9 @@ have_apks() {
   [[ $output != *"router"* ]]
   [[ $output != *"orchestrator"* ]]
   [[ $output != *"proxysql"* ]]
+  for c in haproxy fluentbit operator xtradb-cluster binlog-server toolkit perl-dbd-mysql pmm-client; do
+    [[ $output != *"$c"* ]] || { echo "unexpected: $c"; return 1; }
+  done
 }
 
 @test "proxysql3 only: the server (client) and the two proxysql packages, nothing else; its own registry repository" {

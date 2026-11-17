@@ -508,6 +508,41 @@ mkgit_img() {
   [ "$status" -eq 0 ]
 }
 
+@test "server, -dev, xtrabackup and router images: other images' docker scripts and PXC packages are rejected" {
+  reject() { # <image> <package>...
+    local img=$1 p; shift
+    for p in "$@"; do
+      rm -f "$TMP/img/$img.lock.json"
+      LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" "$img"
+      [ "$status" -ne 0 ] || { echo "$img accepted $p"; return 1; }
+      [[ $output == *"must not contain: $p"* ]]
+    done
+  }
+  accept() { # <image> <lock package list>
+    rm -f "$TMP/img/$1.lock.json"
+    LOCK_PKGS=$2 run "$ROOT/scripts/apko-build.sh" "$1"
+    [ "$status" -eq 0 ] || { echo "$1 refused: $output"; return 1; }
+  }
+  newer='percona-haproxy-docker-scripts percona-fluentbit-docker-scripts percona-orchestrator-docker-scripts
+    percona-proxysql-docker-scripts percona-xtradb-cluster-docker-scripts percona-binlog-server-docker-scripts'
+  # shellcheck disable=SC2086
+  reject percona-server $newer percona-server-docker-scripts percona-mysql-router-docker-scripts \
+    percona-xtradb-cluster-docker-config percona-xtradb-cluster-server
+  # shellcheck disable=SC2086
+  reject percona-server-dev $newer percona-xtrabackup-docker-scripts percona-mysql-router-docker-scripts \
+    percona-xtradb-cluster-docker-config percona-xtradb-cluster-backup-scripts
+  # shellcheck disable=SC2086
+  reject percona-xtrabackup $newer percona-server-docker-scripts percona-mysql-router-docker-scripts \
+    percona-xtradb-cluster-server percona-xtradb-cluster-docker-config percona-xtradb-cluster-backup-scripts
+  # shellcheck disable=SC2086
+  reject percona-mysql-router $newer percona-server-docker-scripts percona-xtrabackup-docker-scripts \
+    percona-xtradb-cluster-garbd
+  # what each image does ship still passes
+  accept percona-server-dev '{"name":"percona-server-docker-scripts"},{"name":"percona-server-docker-config"}'
+  accept percona-xtrabackup '{"name":"percona-xtrabackup-docker-scripts"},{"name":"percona-xtradb-cluster-garbd"}'
+  accept percona-mysql-router '{"name":"percona-mysql-router-docker-scripts"},{"name":"percona-mysql-shell-jit"}'
+}
+
 @test "RELEASE=1 with no committed lock file fails unless RELOCK=1" {
   RELEASE=1 run "$ROOT/scripts/apko-build.sh" percona-server-dev
   [ "$status" -eq 1 ]

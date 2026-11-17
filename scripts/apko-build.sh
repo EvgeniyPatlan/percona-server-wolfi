@@ -62,6 +62,8 @@ pxc_full=$(v pxc_version)-$(v pxc_release).$(v pxc_rpm_release)
 ps_pkgs='percona-server-(server|libs|client|icu-data-files|dev|scripts|test|rocksdb|js|docker-config)'
 shells='busybox[a-z0-9-]*|bash|dash|toybox|mksh|zsh|oksh|[a-z0-9-]*-binsh|apk-tools[a-z0-9-]*'
 dev_only='percona-mysql-shell[a-z0-9-]*|percona-telemetry-agent'
+# the Percona Server images (and router): no PXC package (same files as the PS ones, or PXC-only scripts and config)
+pxc_pkgs='percona-xtradb-cluster[a-z0-9-]*'
 # distroless only: no script interpreters either. percona-server-scripts (mysqld_safe, ps-admin, ...) and Wolfi's
 # jemalloc (jeprof: cmd:perl) are -dev only; the distroless image takes the library alone (libjemalloc2).
 interpreters='perl[a-z0-9-]*|python[a-z0-9.-]*|percona-server-scripts|jemalloc'
@@ -76,11 +78,12 @@ others_scripts() {
 forbid='' distroless=0 epoch_key=source_date_epoch
 case $name in
   percona-server) repo_name=percona-server suffix='' full=$ps_full distroless=1
-    forbid="$shells|$interpreters|$dev_only|percona-server-docker-scripts|percona-xtrabackup-docker-scripts" ;;
-  percona-server-dev) repo_name=percona-server suffix=-dev full=$ps_full forbid='percona-xtrabackup-docker-scripts' ;;
-  percona-xtrabackup) repo_name=percona-xtrabackup suffix='' full=$(v pxb_version)-$(v pxb_release) forbid=$dev_only ;;
+    forbid="$shells|$interpreters|$dev_only|$pxc_pkgs|$(others_scripts '')" ;;
+  percona-server-dev) repo_name=percona-server suffix=-dev full=$ps_full forbid="$pxc_pkgs|$(others_scripts server)" ;;
+  percona-xtrabackup) repo_name=percona-xtrabackup suffix='' full=$(v pxb_version)-$(v pxb_release)
+    forbid="$dev_only|percona-xtradb-cluster-(server|client|docker-config|backup-scripts)|$(others_scripts xtrabackup)" ;;
   percona-mysql-router) repo_name=percona-mysql-router suffix='' full=$ps_full
-    forbid='percona-telemetry-agent|percona-server-docker-scripts|percona-xtrabackup-docker-scripts|percona-server-server' ;;
+    forbid="percona-telemetry-agent|percona-server-server|$pxc_pkgs|$(others_scripts mysql-router)" ;;
   percona-haproxy) repo_name=percona-haproxy suffix='' full=$(v haproxy_version) series=$(v haproxy_series)
     forbid="$dev_only|percona-server-server|$(others_scripts haproxy)|haproxy-[0-9.]+" ;;
   percona-fluentbit) repo_name=percona-fluentbit suffix='' full=$(v fluentbit_version) series=$(v fluentbit_series)
