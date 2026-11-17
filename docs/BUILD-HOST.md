@@ -486,7 +486,7 @@ config, so after any change to a template or to `versions/9.7.yaml` values it us
 too: a reproducible rebuild keeps the lock valid, a changed apk needs a relock.
 
 Reproducibility: `make repro-images` (in `phase-b` right after `images`, before the tests, scanning and signing) runs
-`scripts/repro-images.sh`: a second build of all seven from the lock files the first build used (`RELOCK` cleared; a lock
+`scripts/repro-images.sh`: a second build of all nine from the lock files the first build used (`RELOCK` cleared; a lock
 file that changes fails), with a fresh apko cache and separate output dirs (`out/repro-images/`), published to
 `localhost:5000/repro/...` so the first build's tags, digests and SBOMs stay untouched, then compares each index digest
 with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line must be `OK`. Build date =
@@ -494,7 +494,7 @@ with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line 
 
 Host checks (record in the task report):
 
-1. `make repro-images`: seven `OK` lines.
+1. `make repro-images`: nine `OK` lines.
 2. Distroless: `apko-build.sh percona-server` did not stop with "must not contain" (a runtime dependency pulling in a
    shell, mysqlsh or the agent) or "is distroless but the image contains" (a shell/apk file in the image). If it did,
    send the lock file's package list and the message.
@@ -661,6 +661,24 @@ nodes are discovered by name as the operator's `orc-add_mysql_nodes.sh` does, an
 `caching_sha2_password` cache so orchestrator's plain connection is accepted. This flow was checked by hand with the
 built binary and entrypoint mounted into the official image; the suite itself has not run against our image yet.
 
+## Operators (`percona-server-mysql-operator`, `percona-xtradb-cluster-operator`, `make test-operators`)
+
+Both operators are built from their own repositories at the release tags (`ps_operator_*`, `pxc_operator_*` in the
+version file), not from percona-docker: each recipe runs the `go build` commands of the repository's `build/Dockerfile`
+(same ldflags, CGO off) with Wolfi's Go of the same minor version, and needs network for `go mod download` (module
+cache in melange's cache dir). The main package holds the manager (`/usr/local/bin/<operator>`), `<name>-helpers` the
+binaries and scripts the init containers copy into the database, proxy and backup pods. No dependency on the server
+packages, so they build in a few minutes on their own:
+
+    scripts/build.sh percona-server-mysql-operator percona-xtradb-cluster-operator
+    make test-operators report
+
+`tests/image/operators.bats` (6 tests, under a minute, docker only, no Kubernetes): the manager answers `-h`, uid 2 and
+the official image config (no entrypoint, `CMD /bin/bash`), every helper binary and script at its official path with
+the pinned commit stamped in, and an init-container run (`ps-init-entrypoint.sh` into `/opt/percona`,
+`pxc-init-entrypoint.sh` into `/var/lib/mysql` and `/opt/percona`, both tmpfs) that installs them owned by the
+running uid.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime
@@ -748,7 +766,7 @@ Before and during phase A:
 Phase B:
 
 - [ ] `make phase-b`; then **commit `images/*.lock.json`** created by the first `make images` (Images). Its
-  `repro-images` step printed seven `OK` lines.
+  `repro-images` step printed nine `OK` lines.
 - [ ] Hard pass/fail from the Images section: the edited `/etc/my.cnf` wins over the RPM copy (both commands print
   `PASS`); distroless build did not stop with a "must not contain" message.
 - [ ] `make test-image test-upgrade test-mysqlsh test-xtrabackup test-router test-orchestrator` green; no `ALL-SKIPPED` line; skipped upgrade cases (server refuses the jump)

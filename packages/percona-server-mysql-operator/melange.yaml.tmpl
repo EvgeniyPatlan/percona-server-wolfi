@@ -1,0 +1,173 @@
+package:
+  name: percona-server-mysql-operator
+  version: "@@ps_operator_version@@"
+  epoch: 0
+  description: Percona Operator for MySQL @@ps_operator_version@@ (percona-server-mysql-operator), the manager binary
+  copyright:
+    - license: Apache-2.0
+
+# Mirrors the go_builder stage of build/Dockerfile at ps_operator_tag: ten binaries from ./cmd. The manager goes to
+# /usr/local/bin (this package); the in-pod helpers and the scripts the init container copies into every pod
+# (ps-init-entrypoint.sh: /opt/percona-server-mysql-operator -> /opt/percona) are the -helpers subpackage.
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+      # build/Dockerfile: FROM golang:@@ps_operator_go@@ (go.mod: go 1.27.0); GOTOOLCHAIN=local keeps it from downloading another
+      - go-@@ps_operator_go@@
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/percona-server-mysql-operator
+      tag: "@@ps_operator_tag@@"
+      expected-commit: "@@ps_operator_commit@@"
+      destination: op-src
+
+  # Same commands and ldflags as build/Dockerfile (CGO_ENABLED=0, GOOS=linux, `-w -s -X main.GitCommit -X main.GitBranch
+  # -X main.BuildTime`; mysql-state-monitor gets `-w -s` only). The values are what e2e-tests/build passes for a
+  # release: GIT_COMMIT is the tag's commit, GIT_BRANCH the release branch, BUILD_TIME from SOURCE_DATE_EPOCH here
+  # (`date -u +%Y-%m-%dT%H:%M:%SZ` upstream). Added for reproducibility: -trimpath (also in upstream's GO_LDFLAGS,
+  # which its Dockerfile never passes to go) and -buildvcs=false. melange's go/build pipeline is not used: it forces
+  # GOAMD64=v2 and cgo, neither of which upstream does.
+  - name: Build
+    runs: |
+      set -eu
+      export SOURCE_DATE_EPOCH=@@ps_operator_source_date_epoch@@
+      export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
+      export GOMODCACHE=/var/cache/melange/gomodcache
+      cd op-src
+      go version | grep -F " go@@ps_operator_go@@"
+      go mod download
+      build_time=$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
+      stamp="-w -s -X main.GitCommit=@@ps_operator_commit@@ -X main.GitBranch=@@ps_operator_git_branch@@ -X main.BuildTime=$build_time"
+      out=build/_output/bin
+      mkdir -p "$out"
+      for c in percona-server-mysql-operator:./cmd/manager/ bootstrap:./cmd/bootstrap/ healthcheck:./cmd/healthcheck/ \
+        sidecar:./cmd/sidecar failover:./cmd/failover/ peer-list:cmd/peer-list/main.go orc-handler:./cmd/orc-handler/ \
+        pitr:./cmd/pitr/ clusterset-replica-manager:./cmd/clusterset-replica-manager/; do
+        go build -trimpath -buildvcs=false -ldflags "$stamp" -o "$out/${c%%:*}" "${c#*:}"
+      done
+      go build -trimpath -buildvcs=false -ldflags "-w -s" -o "$out/mysql-state-monitor" cmd/mysql-state-monitor/main.go
+
+  # Runtime layout of the Dockerfile: COPY LICENSE /licenses/, the manager in /usr/local/bin, and the helper tree it
+  # assembles with `cp -a` (nine binaries, the scripts, build/lib and build/logcollector) in
+  # /opt/percona-server-mysql-operator.
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      cd op-src
+      install -Dm0755 build/_output/bin/percona-server-mysql-operator "$d/usr/local/bin/percona-server-mysql-operator"
+      install -Dm0644 LICENSE "$d/licenses/LICENSE"
+
+  - name: Build-path leak scan
+    runs: |
+      bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)"
+
+subpackages:
+  - name: percona-server-mysql-operator-helpers
+    description: In-pod helpers of the Percona Operator for MySQL (bootstrap, healthcheck, sidecar, peer-list, ...) and the scripts the init container installs into /opt/percona
+    dependencies:
+      runtime:
+        # ps-init-entrypoint.sh (run in the operator image as the init container): bash, install/id/cp/chown/chmod
+        - bash
+        - coreutils
+    pipeline:
+      - runs: |
+          set -eu
+          d="${{targets.subpkgdir}}/opt/percona-server-mysql-operator"
+          cd op-src
+          mkdir -p "$d"
+          for b in bootstrap healthcheck sidecar failover peer-list orc-handler mysql-state-monitor \
+            clusterset-replica-manager pitr; do
+            install -m0755 "build/_output/bin/$b" "$d/$b"
+          done
+          for f in ps-entrypoint.sh ps-pre-stop.sh heartbeat-entrypoint.sh router-entrypoint.sh \
+            router_readiness_check.sh router_startup_check.sh orc-entrypoint.sh orchestrator.conf.json \
+            orc-add_mysql_nodes.sh ps-init-entrypoint.sh run-backup.sh run-restore.sh prepare-s3-certs.sh \
+            haproxy-entrypoint.sh haproxy_add_mysql_nodes.sh haproxy_check_primary.sh haproxy_check_replicas.sh \
+            haproxy_liveness_check.sh haproxy_readiness_check.sh haproxy_startup_check.sh haproxy.cfg \
+            haproxy-global.cfg pmm-prerun.sh binlog-server-entrypoint.sh run-pitr-restore.sh run-prepare-restore.sh; do
+            cp -a "build/$f" "$d/$f"
+          done
+          cp -a build/lib build/logcollector "$d/"
+          # Modes as in the official image: `cp -a` keeps those of Percona's checkout (umask 002), so scripts and
+          # config files are 0775/0664 and lib/, logcollector/ and their subdirectories 0775; the binaries 0755.
+          find "$d" -mindepth 1 -type d -exec chmod 0775 {} +
+          find "$d" -type f -perm -u+x -exec chmod 0775 {} +
+          find "$d" -type f ! -perm -u+x -exec chmod 0664 {} +
+          for b in bootstrap healthcheck sidecar failover peer-list orc-handler mysql-state-monitor \
+            clusterset-replica-manager pitr; do
+            chmod 0755 "$d/$b"
+          done
+          chmod 0755 "$d"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - name: helper binaries are static and start
+          runs: |
+            d=/opt/percona-server-mysql-operator
+            for b in bootstrap healthcheck sidecar failover peer-list orc-handler mysql-state-monitor \
+              clusterset-replica-manager pitr; do
+              test -x "$d/$b"
+              # statically linked (CGO_ENABLED=0): no program interpreter
+              if grep -q 'ld-linux' "$d/$b"; then echo "$d/$b: dynamically linked" >&2; exit 1; fi
+            done
+            # only the manager declares main.GitCommit (the -X stamps of the helpers are no-ops, as upstream)
+            grep -aqF 'go@@ps_operator_go@@' "$d/bootstrap"
+            # peer-list insists on being pid 1 (it runs as a pod's entrypoint) before it parses flags
+            out=$("$d/peer-list" -h 2>&1 || true)
+            echo "$out" | grep -q 'should be 1'
+        - name: scripts
+          runs: |
+            d=/opt/percona-server-mysql-operator
+            for f in "$d"/*.sh "$d"/lib/util.sh "$d"/logcollector/entrypoint.sh; do bash -n "$f"; done
+            test -x "$d/ps-init-entrypoint.sh"
+            test -f "$d/orchestrator.conf.json"
+            test -f "$d/haproxy-global.cfg"
+            test -d "$d/logcollector/fluentbit"
+            test -f "$d/logcollector/logrotate/logrotate.conf"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - percona-server-mysql-operator
+  pipeline:
+    - name: manager runs
+      runs: |
+        b=/usr/local/bin/percona-server-mysql-operator
+        test -x "$b"
+        if grep -q 'ld-linux' "$b"; then echo "$b: dynamically linked" >&2; exit 1; fi
+        # flag.Parse: -h prints the usage and exits 0
+        "$b" -h > out 2>&1
+        grep -q -- '-metrics-bind-address' out
+        grep -aqF '@@ps_operator_commit@@' "$b"
+        grep -aqF 'go@@ps_operator_go@@' "$b"
+        test -f /licenses/LICENSE
+
+update:
+  enabled: false

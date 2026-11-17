@@ -1,7 +1,7 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
 Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9.7 from source as Wolfi apk packages
-(melange) and assembles seven container images from them (apko). Not an official Percona image.
+(melange) and assembles nine container images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
@@ -12,6 +12,8 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-haproxy:3.4` | Drop-in replacement for the official `percona/haproxy:3.4.7-1` used by the Percona operators: Wolfi HAProxy 3.4.7 (same version) with the same entrypoint, configs and PXC check scripts, and the Percona Server 9.7 client. |
 | `percona-fluentbit:5.0` | Drop-in replacement for the official `percona/fluentbit:5.1.4-1` (the operators' log collector): Wolfi Fluent Bit 5.0.7 (one minor behind, see `docs/deviations.md`), logrotate, supercronic, the same entrypoint and configs, and the Percona Server 9.7 client. |
 | `percona-orchestrator:3.2.6` | Drop-in replacement for the official `percona/percona-orchestrator:3.2.6-25` (Percona Operator for MySQL, async replication): Orchestrator and `orchestrator-client` built from source, the same entrypoint (bash), configuration (SQLite backend, raft) and `add_mysql_nodes.sh`. |
+| `percona-server-mysql-operator:1.3.0` | Drop-in replacement for the official `percona/percona-server-mysql-operator:1.3.0` (Percona Operator for MySQL): the manager and the helpers its init container copies into every pod, built from the `v1.3.0` tag. |
+| `percona-xtradb-cluster-operator:1.20.0` | Drop-in replacement for the official `percona/percona-xtradb-cluster-operator:1.20.0` (Percona Operator for MySQL based on PXC): the manager and its init-container helpers, built from the `v1.20.0` tag. |
 
 ## Packages
 
@@ -32,6 +34,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-fluentbit-docker-scripts` | Entrypoint, Fluent Bit and logrotate configs and the postrotate script of the log collector image from percona-docker |
 | `percona-orchestrator` | Orchestrator (Go, `percona/orchestrator`) as in the rpm: `/usr/local/orchestrator` (binary, `resources/`, sample configs); subpackage `percona-orchestrator-client` (`/usr/bin/orchestrator-client`) |
 | `percona-orchestrator-docker-scripts` | Entrypoint, `/etc/orchestrator` configuration and `add_mysql_nodes.sh` of the orchestrator image from percona-docker |
+| `percona-server-mysql-operator` | Percona Operator for MySQL (Go, from its repository's `build/Dockerfile`); subpackage `-helpers` (bootstrap, healthcheck, sidecar, peer-list, ... and the scripts under `/opt/percona-server-mysql-operator`) |
+| `percona-xtradb-cluster-operator` | Percona Operator for MySQL based on PXC (Go); subpackage `-helpers` (peer-list, pitr, xtrabackup sidecar, ... and the init-container scripts in `/`, `/backup`, `/logcollector`) |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -57,6 +61,7 @@ matches the apks (commit the rewritten lock file).
     scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
     scripts/build.sh percona-haproxy percona-fluentbit   # the operators' HAProxy and log collector images
     scripts/build.sh percona-orchestrator     # only the orchestrator image (no server build)
+    scripts/build.sh percona-server-mysql-operator percona-xtradb-cluster-operator   # the operator images (Go only)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 

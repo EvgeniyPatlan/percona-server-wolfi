@@ -1,0 +1,52 @@
+# percona-xtradb-cluster-operator:@@pxc_operator_version@@ - drop-in replacement for the official
+# percona/percona-xtradb-cluster-operator:@@pxc_operator_version@@ (build/Dockerfile of percona-xtradb-cluster-operator
+# at pxc_operator_tag, not percona-docker). The same image runs the operator Deployment and the init containers of the
+# PXC, HAProxy, ProxySQL, backup and PITR pods (*-init-entrypoint.sh install the helpers and scripts from / into the
+# shared volumes), so it has bash and coreutils as the UBI base does. Differences: docs/deviations.md ("operator" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # ubi9-minimal base (+ `microdnf reinstall tzdata`): bash, coreutils-single, tzdata, ca-certificates
+    - busybox
+    - bash
+    - coreutils
+    - tzdata
+    - ca-certificates-bundle
+    # COPY LICENSE /licenses/, the manager in /usr/local/bin, helpers and scripts in /, /logcollector, /backup
+    - percona-xtradb-cluster-operator
+    - percona-xtradb-cluster-operator-helpers
+
+# Dockerfile: USER 2 (the UBI base's daemon account, daemon:x:2:2:daemon:/sbin:/sbin/nologin)
+accounts:
+  groups:
+    - groupname: daemon
+      gid: 2
+  users:
+    - username: daemon
+      uid: 2
+      gid: 2
+      homedir: /sbin
+      shell: /sbin/nologin
+  run-as: "2"
+
+# No ENTRYPOINT in the Dockerfile; CMD is the UBI base's. The Deployment and the init containers set the command.
+cmd: /bin/bash
+work-dir: /
+
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official image: set by the UBI base (buildah); tools use it to detect a container
+  container: oci
+
+annotations:
+  org.opencontainers.image.title: percona-xtradb-cluster-operator
+  org.opencontainers.image.description: Percona Operator for MySQL based on Percona XtraDB Cluster @@pxc_operator_version@@ built from source on Wolfi (drop-in for percona/percona-xtradb-cluster-operator:@@pxc_operator_version@@). Not an official Percona image.
+  org.opencontainers.image.version: "@@pxc_operator_version@@"
+  org.opencontainers.image.licenses: Apache-2.0
+
+archs:
+  - x86_64

@@ -28,7 +28,8 @@ lint-recipes: render
 PACKAGES := mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtrabackup \
   percona-telemetry-agent percona-server-docker-scripts percona-xtrabackup-docker-scripts \
   percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts \
-  percona-orchestrator percona-orchestrator-docker-scripts
+  percona-orchestrator percona-orchestrator-docker-scripts \
+  percona-server-mysql-operator percona-xtradb-cluster-operator
 
 .PHONY: packages $(addprefix pkg-,$(PACKAGES))
 

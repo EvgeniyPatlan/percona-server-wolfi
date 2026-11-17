@@ -4,7 +4,8 @@ setup() {
   ROOT=$(cd "$BATS_TEST_DIRNAME/../.." && pwd)
   TMP=$BATS_TEST_TMPDIR
   mkdir -p "$TMP/img" "$TMP/kd"
-  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-haproxy percona-fluentbit percona-orchestrator; do
+  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-haproxy percona-fluentbit percona-orchestrator \
+    percona-server-mysql-operator percona-xtradb-cluster-operator; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -130,6 +131,23 @@ STUB
   [[ $line == *"localhost:5000/percona-orchestrator:$v "* ]]
   [[ $line == *"localhost:5000/percona-orchestrator:$v-7"* ]]
   [[ $line != *"percona-orchestrator:9.7"* ]]
+}
+
+@test "operator images: one tag, the operator version, and the operator's commit time as build date" {
+  vf=$ROOT/versions/9.7.yaml
+  for n in percona-server-mysql-operator:ps percona-xtradb-cluster-operator:pxc; do
+    img=${n%%:*} k=${n#*:}
+    : > "$TMP/calls"
+    BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" "$img"
+    [ "$status" -eq 0 ]
+    v=$(grep "^${k}_operator_version:" "$vf" | cut -d'"' -f2)
+    epoch=$(grep "^${k}_operator_source_date_epoch:" "$vf" | cut -d'"' -f2)
+    line=$(grep -E -- ' publish ' "$TMP/calls")
+    [[ $line == *"localhost:5000/$img:$v "* ]]
+    [[ $line == *"localhost:5000/$img:$v-7"* ]]
+    [ "$(grep -o "localhost:5000/$img:[^ ]*" <<< "$line" | sort -u | wc -l)" -eq 2 ]
+    [[ $line == *"--build-date $(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)"* ]]
+  done
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -323,6 +341,24 @@ mkgit_img() {
   LOCK_PKGS='{"name":"percona-orchestrator"},{"name":"percona-orchestrator-client"},{"name":"percona-orchestrator-docker-scripts"},{"name":"bash"}' \
     run "$ROOT/scripts/apko-build.sh" percona-orchestrator
   [ "$status" -eq 0 ]
+}
+
+@test "operator images: no server, client, shell, other operator or interpreter packages" {
+  for p in percona-server percona-server-client percona-server-libs percona-mysql-shell percona-mysql-router \
+    percona-xtrabackup percona-telemetry-agent percona-xtradb-cluster-operator-helpers python-3.13 perl; do
+    rm -f "$TMP/img/percona-server-mysql-operator.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-server-mysql-operator
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-xtradb-cluster-operator.lock.json"
+  LOCK_PKGS='{"name":"percona-server-mysql-operator"}' run "$ROOT/scripts/apko-build.sh" percona-xtradb-cluster-operator
+  [ "$status" -ne 0 ]
+  for n in percona-server-mysql-operator percona-xtradb-cluster-operator; do
+    rm -f "$TMP/img/$n.lock.json"
+    LOCK_PKGS="{\"name\":\"$n\"},{\"name\":\"$n-helpers\"},{\"name\":\"bash\"},{\"name\":\"busybox\"}" \
+      run "$ROOT/scripts/apko-build.sh" "$n"
+    [ "$status" -eq 0 ]
+  done
 }
 
 @test "distroless: interpreters (perl, python) and the scripts subpackage are rejected; -dev allows them" {

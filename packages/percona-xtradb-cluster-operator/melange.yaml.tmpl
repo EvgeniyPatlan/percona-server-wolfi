@@ -1,0 +1,165 @@
+package:
+  name: percona-xtradb-cluster-operator
+  version: "@@pxc_operator_version@@"
+  epoch: 0
+  description: Percona Operator for MySQL based on Percona XtraDB Cluster @@pxc_operator_version@@ (percona-xtradb-cluster-operator), the manager binary
+  copyright:
+    - license: Apache-2.0
+
+# Mirrors the go_builder stage of build/Dockerfile at pxc_operator_tag: six binaries from ./cmd. The manager goes to
+# /usr/local/bin (this package); the helpers and the scripts the init containers copy into the PXC, HAProxy, ProxySQL,
+# backup and PITR pods (pxc-init-entrypoint.sh and friends install them from /) are the -helpers subpackage.
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+      # build/Dockerfile: FROM golang:@@pxc_operator_go@@ (go.mod: go 1.26.0); GOTOOLCHAIN=local keeps it from downloading another
+      - go-@@pxc_operator_go@@
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/percona-xtradb-cluster-operator
+      tag: "@@pxc_operator_tag@@"
+      expected-commit: "@@pxc_operator_commit@@"
+      destination: op-src
+
+  # Same commands and ldflags as build/Dockerfile (CGO_ENABLED=0, GOOS=linux): the manager and mysql-state-monitor with
+  # `-w -s -X main.GitCommit -X main.GitBranch -X main.BuildTime`, peer-list, pitr, xtrabackup-server-sidecar and
+  # xtrabackup-run-backup with no -ldflags at all (not stripped), as upstream. Stamp values as e2e-tests/build passes
+  # them for a release (GIT_COMMIT the tag's commit, GIT_BRANCH the release branch), BUILD_TIME from SOURCE_DATE_EPOCH.
+  # Added for reproducibility: -trimpath (upstream's GO_LDFLAGS carries it, but its Dockerfile never passes it to go)
+  # and -buildvcs=false.
+  - name: Build
+    runs: |
+      set -eu
+      export SOURCE_DATE_EPOCH=@@pxc_operator_source_date_epoch@@
+      export CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
+      export GOMODCACHE=/var/cache/melange/gomodcache
+      cd op-src
+      go version | grep -F " go@@pxc_operator_go@@"
+      go mod download
+      build_time=$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
+      stamp="-w -s -X main.GitCommit=@@pxc_operator_commit@@ -X main.GitBranch=@@pxc_operator_git_branch@@ -X main.BuildTime=$build_time"
+      out=build/_output/bin
+      mkdir -p "$out"
+      go build -trimpath -buildvcs=false -ldflags "$stamp" -o "$out/percona-xtradb-cluster-operator" cmd/manager/main.go
+      go build -trimpath -buildvcs=false -o "$out/peer-list" cmd/peer-list/main.go
+      go build -trimpath -buildvcs=false -o "$out/pitr" cmd/pitr/main.go
+      go build -trimpath -buildvcs=false -o "$out/xtrabackup-server-sidecar" cmd/xtrabackup/server/main.go
+      go build -trimpath -buildvcs=false -o "$out/xtrabackup-run-backup" cmd/xtrabackup/run-backup/main.go
+      go build -trimpath -buildvcs=false -ldflags "$stamp" -o "$out/mysql-state-monitor" cmd/mysql-state-monitor/main.go
+
+  # Runtime layout of the Dockerfile: COPY LICENSE /licenses/ and the manager in /usr/local/bin. (The builder stage
+  # also collects the Go modules' license files into its own /licenses, but the runtime stage never copies them.)
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      cd op-src
+      install -Dm0755 build/_output/bin/percona-xtradb-cluster-operator "$d/usr/local/bin/percona-xtradb-cluster-operator"
+      install -Dm0644 LICENSE "$d/licenses/LICENSE"
+
+  - name: Build-path leak scan
+    runs: |
+      bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)"
+
+subpackages:
+  - name: percona-xtradb-cluster-operator-helpers
+    description: In-pod helpers of the Percona Operator for MySQL based on PXC (peer-list, pitr, xtrabackup sidecar, ...) and the scripts its init containers install
+    dependencies:
+      runtime:
+        # *-init-entrypoint.sh (run in the operator image as init containers): bash, install/id/cp/chown/chmod
+        - bash
+        - coreutils
+    pipeline:
+      # Dockerfile: binaries and scripts COPY'd to the root, build/logcollector to /logcollector, build/backup to
+      # /backup. COPY keeps the modes of the checkout; normalised to git's (0755 executable, 0644 otherwise).
+      - runs: |
+          set -eu
+          d="${{targets.subpkgdir}}"
+          cd op-src
+          mkdir -p "$d"
+          for b in peer-list pitr mysql-state-monitor xtrabackup-server-sidecar xtrabackup-run-backup; do
+            install -m0755 "build/_output/bin/$b" "$d/$b"
+          done
+          for f in pxc-entrypoint.sh pxc-init-entrypoint.sh pitr-init-entrypoint.sh backup-init-entrypoint.sh \
+            pxc-configure-pxc.sh liveness-check.sh readiness-check.sh pmm-prerun.sh get-pxc-state \
+            wsrep_cmd_notify_handler.sh prepare_restored_cluster.sh haproxy-entrypoint.sh haproxy-init-entrypoint.sh \
+            haproxy_add_pxc_nodes.sh haproxy_check_pxc.sh haproxy_liveness_check.sh haproxy_readiness_check.sh \
+            haproxy.cfg haproxy-global.cfg proxysql-entrypoint.sh proxysql-init-entrypoint.sh proxysql.cnf \
+            proxysql-admin.cnf proxysql_add_cluster_nodes.sh proxysql_add_proxysql_nodes.sh proxysql_add_pxc_nodes.sh \
+            proxysql_scheduler_config.tmpl; do
+            cp -a "build/$f" "$d/$f"
+          done
+          cp -a build/logcollector build/backup "$d/"
+          for p in "$d"/logcollector "$d"/backup; do
+            find "$p" -type d -exec chmod 0755 {} +
+          done
+          find "$d" -type f -perm -u+x -exec chmod 0755 {} +
+          find "$d" -type f ! -perm -u+x -exec chmod 0644 {} +
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - name: helper binaries are static and start
+          runs: |
+            for b in peer-list pitr mysql-state-monitor xtrabackup-server-sidecar xtrabackup-run-backup; do
+              test -x "/$b"
+              if grep -q 'ld-linux' "/$b"; then echo "/$b: dynamically linked" >&2; exit 1; fi
+            done
+            grep -aqF '@@pxc_operator_commit@@' /mysql-state-monitor
+            /peer-list -h > out 2>&1
+            grep -q -- '-on-change' out
+        - name: scripts
+          runs: |
+            for f in /*.sh /get-pxc-state /backup/*.sh /backup/lib/pxc/*.sh /logcollector/entrypoint.sh; do
+              bash -n "$f"
+            done
+            test -x /pxc-init-entrypoint.sh
+            test -f /proxysql_scheduler_config.tmpl
+            test -f /haproxy-global.cfg
+            test -d /logcollector/fluentbit
+            test -f /logcollector/logrotate/logrotate-mysql.conf
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - percona-xtradb-cluster-operator
+  pipeline:
+    - name: manager runs
+      runs: |
+        b=/usr/local/bin/percona-xtradb-cluster-operator
+        test -x "$b"
+        if grep -q 'ld-linux' "$b"; then echo "$b: dynamically linked" >&2; exit 1; fi
+        # flag.Parse: -h prints the usage and exits 0
+        "$b" -h > out 2>&1
+        grep -q -- '-metrics-bind-address' out
+        grep -aqF '@@pxc_operator_commit@@' "$b"
+        grep -aqF 'go@@pxc_operator_go@@' "$b"
+        test -f /licenses/LICENSE
+
+update:
+  enabled: false

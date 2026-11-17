@@ -11,7 +11,9 @@
 # repository with a -dev suffix; percona-xtrabackup:<series>, :<pxb_version>-<pxb_release>;
 # percona-mysql-router:<series>, :<ps_version>-<ps_release> (the router is built from the server tree);
 # percona-haproxy:<haproxy_series>, :<haproxy_version>; percona-fluentbit:<fluentbit_series>, :<fluentbit_version>;
-# percona-orchestrator:<orc_version>, :<orc_version>-<orc_release>.
+# percona-orchestrator:<orc_version>, :<orc_version>-<orc_release>;
+# percona-server-mysql-operator:<ps_operator_version>, percona-xtradb-cluster-operator:<pxc_operator_version> (one tag
+# each, as the official operator images).
 # Reproducible inputs: build date from source_date_epoch, VCS autodetection off, the revision annotation is the last
 # commit that touched the build inputs or images/*.tmpl (<sha>-dirty when those have uncommitted changes; RELEASE=1
 # refuses that unless ALLOW_DIRTY=1).
@@ -23,7 +25,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/keys.sh"
 cd "$here/.."
 
-usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator> [--no-publish]"; }
+usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator|percona-server-mysql-operator|percona-xtradb-cluster-operator> [--no-publish]"; }
 (($#)) || usage
 name=$1
 shift
@@ -61,7 +63,7 @@ others_scripts() {
   done
   printf '%s\n' "$out"
 }
-forbid='' distroless=0
+forbid='' distroless=0 epoch_key=source_date_epoch
 case $name in
   percona-server) repo_name=percona-server suffix='' full=$ps_full distroless=1
     forbid="$shells|$interpreters|$dev_only|percona-server-docker-scripts|percona-xtrabackup-docker-scripts" ;;
@@ -75,6 +77,18 @@ case $name in
     forbid="$dev_only|percona-server-server|$(others_scripts fluentbit)" ;;
   percona-orchestrator) repo_name=percona-orchestrator suffix='' full=$(v orc_version)-$(v orc_release) series=$(v orc_version)
     forbid="$dev_only|percona-server-[a-z0-9-]*|percona-mysql-router[a-z0-9-]*|percona-xtrabackup[a-z0-9-]*|$(others_scripts orchestrator)" ;;
+  # operator images: the operator's own packages only (no database, client, shell or other image's scripts)
+  percona-server-mysql-operator | percona-xtradb-cluster-operator)
+    repo_name=$name suffix=''
+    if [[ $name == percona-server-mysql-operator ]]; then
+      full=$(v ps_operator_version) other=percona-xtradb-cluster-operator epoch_key=ps_operator_source_date_epoch
+    else
+      full=$(v pxc_operator_version) other=percona-server-mysql-operator epoch_key=pxc_operator_source_date_epoch
+    fi
+    series=$full
+    forbid="${other}[a-z0-9-]*|percona-server|percona-server-(server|client|libs|scripts|docker-scripts|docker-config|rocksdb|js|dev|test)"
+    forbid+="|percona-mysql-[a-z0-9-]*|percona-xtrabackup[a-z0-9-]*|percona-telemetry-agent|perl[a-z0-9-]*|python[a-z0-9.-]*"
+    forbid+="|$(others_scripts '')" ;;
   *) die "unknown image: $name" ;;
 esac
 
@@ -94,14 +108,16 @@ registry=${REGISTRY:-localhost:5000}
 [[ -r $APK_PUBKEY ]] || die "public key not found: $APK_PUBKEY (run make keys)"
 [[ -d $apk_repo ]] || die "apk repo not found: $apk_repo (build the packages first)"
 
-epoch=$(v source_date_epoch)
+# build date: the server's commit time; the operator images use their operator's (epoch_key above)
+epoch=$(v "${epoch_key:-source_date_epoch}")
 build_date=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)
 
 # revision annotation: the last commit that touched the build inputs or the image templates (build_commit in
 # lib/common.sh); committing images/*.lock.json or docs does not change it, so the image digest stays reproducible.
 commit=$(build_commit 'images/*.tmpl') || die "cannot determine the build-input commit (see above)"
 
-tags=("$registry/$repo_name:$series$suffix" "$registry/$repo_name:$full$suffix")
+tags=("$registry/$repo_name:$series$suffix")
+[[ $full == "$series" ]] || tags+=("$registry/$repo_name:$full$suffix")
 if [[ -n ${BUILD_ID:-} ]]; then
   [[ $BUILD_ID =~ ^[A-Za-z0-9._-]+$ ]] || die "bad BUILD_ID: $BUILD_ID"
   tags+=("$registry/$repo_name:$full-$BUILD_ID$suffix")
