@@ -46,6 +46,13 @@ ROUTER_IMAGE ?= $(REGISTRY)/percona-mysql-router:9.7
 test-router: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) ROUTER_IMAGE=$(ROUTER_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/router.bats)
 
+# ProxySQL image: versions and tools, uid, the shipped configuration (admin on 6032, offline), a backend from the -dev
+# server image added through the admin interface and queried through ProxySQL (docker only, ~2 min).
+PROXYSQL_IMAGE ?= $(REGISTRY)/percona-proxysql3:3.0
+.PHONY: test-proxysql
+test-proxysql: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) PROXYSQL_IMAGE=$(PROXYSQL_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/proxysql.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).

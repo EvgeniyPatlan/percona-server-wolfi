@@ -9,6 +9,7 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
 | `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
 | `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
+| `percona-proxysql3:3.0` | Drop-in replacement for the official `percona/proxysql3:3.0.9-1.1` (PXC operator): ProxySQL 3.0.9 (Wolfi's `proxysql` package, same upstream release) with Percona's `proxysql-admin` tools, the same entrypoint and configuration, and the Percona Server client. |
 
 ## Packages
 
@@ -25,6 +26,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
 | `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
 | `percona-mysql-router-docker-scripts` | Entrypoint script of the router image from percona-docker |
+| `percona-proxysql-admin` | Percona's ProxySQL tools as in the `proxysql3` rpm: `proxysql-admin`, `proxysql-status`, `percona-scheduler-admin`, `pxc_scheduler_handler` (Go, built here), the galera checker scripts, `/etc/config.toml` |
+| `percona-proxysql-docker-scripts` | Entrypoint, configuration and `add_*_nodes.sh` of the proxysql3 image from percona-docker; subpackage `percona-proxysql-my-print-defaults` (`my_print_defaults` alone, as the Dockerfile takes it from the server rpm) |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -48,6 +51,7 @@ matches the apks (commit the rewritten lock file).
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
     scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
     scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
+    scripts/build.sh percona-proxysql3        # only the ProxySQL image (server client, admin tools, entrypoint)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -195,6 +199,24 @@ With a cluster on the docker network `db` (members reachable by name, `n1` one o
 
 The image also has MySQL Shell (`docker exec -it router mysqlsh`), `python3` and `curl`, which the Percona Operator's
 router scripts use. A cluster can be created from the `:9.7-dev` image with `mysqlsh` (`dba.createCluster`).
+
+### `percona-proxysql3:3.0`: ProxySQL
+
+    PROXYSQL=localhost:5000/percona-proxysql3:3.0
+
+The entrypoint is the official one: it writes `PROXY_ADMIN_USER`/`PROXY_ADMIN_PASSWORD`, `MONITOR_PASSWORD`,
+`OPERATOR_USERNAME`/`OPERATOR_PASSWORD` into `/etc/proxysql/proxysql.cnf` and `/etc/proxysql-admin.cnf`, then starts
+`proxysql -f -c /etc/proxysql/proxysql.cnf --reload`. Clients connect on 3306 (and 33062), the admin interface is 6032
+(the `admin` user may only connect from inside the container):
+
+    docker run -d --name proxysql --network db -e PROXY_ADMIN_PASSWORD=secret -p 3306:3306 $PROXYSQL
+    docker exec -e MYSQL_PWD=secret proxysql mysql -h127.0.0.1 -P6032 -uadmin \
+      -e "INSERT INTO mysql_servers (hostgroup_id, hostname, port, use_ssl) VALUES (0, 'db1', 3306, 1);
+          INSERT INTO mysql_users (username, password, default_hostgroup) VALUES ('app', 'apppw', 0);
+          LOAD MYSQL SERVERS TO RUNTIME; LOAD MYSQL USERS TO RUNTIME"
+    mysql -h127.0.0.1 -P3306 -uapp -papppw
+
+With a PXC cluster, `proxysql-admin` (and the operator's `add_pxc_nodes.sh`) configures the hostgroups instead.
 
 ## Official image vs this build
 

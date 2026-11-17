@@ -1,0 +1,134 @@
+package:
+  name: percona-proxysql-docker-scripts
+  version: "@@proxysql_version@@"
+  epoch: 0
+  description: Entrypoint, configuration and helper scripts of the official percona/proxysql3 image (percona-docker proxysql/ at a pinned commit, unpatched)
+  copyright:
+    - license: GPL-2.0-only
+  dependencies:
+    runtime:
+      - bash
+      - busybox
+      - percona-proxysql-admin
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+      # my_print_defaults is taken from here (local repo), as the Dockerfile takes it from the server rpm
+      - percona-server-server
+
+pipeline:
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # Dockerfile-proxysql3: `cp /usr/share/doc/proxysql3/LICENSE /licenses/LICENSE.proxysql` (the ProxySQL
+  # source tree's LICENSE; Wolfi's proxysql package does not ship it)
+  - uses: fetch
+    with:
+      uri: https://raw.githubusercontent.com/sysown/proxysql/@@proxysql_commit@@/LICENSE
+      expected-sha256: @@proxysql_license_sha256@@
+      extract: false
+
+  # Dockerfile-proxysql3: COPY dockerdir / (entrypoint.sh, etc/proxysql/proxysql.cnf, etc/proxysql-admin.cnf,
+  # usr/bin/add_*.sh); COPY LICENSE /licenses/LICENSE.Dockerfile; `chown 1001:1001` and `chmod 664` on the two
+  # configuration files (the entrypoint edits them in place as uid 1001). Ownership as in the telemetry agent recipe.
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      src=pd-src/proxysql/dockerdir
+      test "$(cd "$src" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" = \
+        "./entrypoint.sh ./etc/proxysql-admin.cnf ./etc/proxysql/proxysql.cnf ./usr/bin/add_cluster_nodes.sh ./usr/bin/add_proxysql_nodes.sh ./usr/bin/add_pxc_nodes.sh "
+      install -Dm0755 "$src/entrypoint.sh" "$d/entrypoint.sh"
+      for f in add_cluster_nodes.sh add_proxysql_nodes.sh add_pxc_nodes.sh; do
+        install -Dm0755 "$src/usr/bin/$f" "$d/usr/bin/$f"
+      done
+      install -Dm0664 "$src/etc/proxysql/proxysql.cnf" "$d/etc/proxysql/proxysql.cnf"
+      install -Dm0664 "$src/etc/proxysql-admin.cnf" "$d/etc/proxysql-admin.cnf"
+      chown 1001:1001 "$d/etc/proxysql/proxysql.cnf" "$d/etc/proxysql-admin.cnf"
+      install -Dm0644 pd-src/proxysql/LICENSE "$d/licenses/LICENSE.Dockerfile"
+      install -Dm0644 LICENSE "$d/licenses/LICENSE.proxysql"
+      for f in etc/proxysql/proxysql.cnf etc/proxysql-admin.cnf; do
+        test "$(stat -c '%u:%g %a' "$d/$f")" = "1001:1001 664"
+      done
+
+subpackages:
+  # Dockerfile-proxysql3: `rpm2cpio percona-xtradb-cluster-server-*.rpm | cpio -idv ./usr/bin/my_print_defaults`
+  # (percona-scheduler-admin needs it). The same binary from this repository's percona-server-server; `replaces`
+  # because both own /usr/bin/my_print_defaults.
+  - name: percona-proxysql-my-print-defaults
+    description: my_print_defaults from percona-server-server, alone, for the proxysql3 image
+    dependencies:
+      replaces:
+        - percona-server-server
+    pipeline:
+      - runs: |
+          s="${{targets.subpkgdir}}"
+          install -Dm0755 /usr/bin/my_print_defaults "$s/usr/bin/my_print_defaults"
+
+  # proxysql/start_node.sh: a host-side example (docker run of the image on a PXC network with etcd discovery);
+  # not copied into the official image, kept as documentation.
+  - name: percona-proxysql-docker-scripts-doc
+    description: start_node.sh example of percona-docker proxysql/
+    pipeline:
+      - runs: |
+          s="${{targets.subpkgdir}}"
+          install -Dm0644 pd-src/proxysql/start_node.sh "$s/usr/share/doc/percona-proxysql-docker-scripts/start_node.sh"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - percona-proxysql-docker-scripts
+        - percona-proxysql-my-print-defaults
+  pipeline:
+    - name: entrypoint and helpers
+      runs: |
+        bash -n /entrypoint.sh
+        test -x /entrypoint.sh
+        head -n1 /entrypoint.sh | grep -x '#!/bin/bash'
+        grep -q 'PROXY_ADMIN_CFG=/etc/proxysql-admin.cnf' /entrypoint.sh
+        for f in add_cluster_nodes.sh add_proxysql_nodes.sh add_pxc_nodes.sh; do bash -n "/usr/bin/$f"; done
+        test -f /licenses/LICENSE.Dockerfile
+        grep -q 'GNU GENERAL PUBLIC LICENSE' /licenses/LICENSE.proxysql
+    - name: configuration
+      runs: |
+        grep -q 'mysql_ifaces="0.0.0.0:6032"' /etc/proxysql/proxysql.cnf
+        grep -q 'interfaces="0.0.0.0:3306"' /etc/proxysql/proxysql.cnf
+        grep -q "^export PROXYSQL_PASSWORD='admin'" /etc/proxysql-admin.cnf
+    - name: the entrypoint edits the configuration and execs its arguments
+      runs: |
+        out=$(OPERATOR_PASSWORD=op MONITOR_PASSWORD='m!on' PROXY_ADMIN_PASSWORD=adm /entrypoint.sh echo started 2> /dev/null)
+        test "$out" = started
+        grep -q 'interfaces="0.0.0.0:3306;0.0.0.0:33062"' /etc/proxysql/proxysql.cnf
+        grep -q 'admin_credentials="admin:adm"' /etc/proxysql/proxysql.cnf
+        grep -q 'monitor_password="m!on"' /etc/proxysql/proxysql.cnf
+        grep -q "^export WRITERS_ARE_READERS='yes'" /etc/proxysql-admin.cnf
+        grep -q "^export CLUSTER_PORT='33062'" /etc/proxysql-admin.cnf
+    - name: my_print_defaults
+      runs: |
+        my_print_defaults --version | grep -q 'Ver @@ps_version@@'
+
+update:
+  enabled: false

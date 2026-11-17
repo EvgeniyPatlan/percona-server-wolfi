@@ -1,0 +1,143 @@
+package:
+  name: percona-proxysql-admin
+  version: "@@pat_version@@"
+  epoch: 0
+  description: Percona's ProxySQL admin tools @@pat_version@@ (proxysql-admin, proxysql-status, percona-scheduler-admin, pxc_scheduler_handler) and the galera checker scripts, as in the proxysql3 rpm
+  copyright:
+    - license: GPL-2.0-or-later
+  dependencies:
+    # what the scripts call: mysql (admin interface and cluster nodes), openssl (password handling, checked
+    # at start), getopt/column (util-linux), awk/sed/grep/cut/timeout/hostname (busybox). proxysql itself is
+    # not a dependency (the tools talk to it over the admin port; the image installs it).
+    runtime:
+      - bash
+      - busybox
+      - util-linux-misc
+      - openssl
+      - percona-server-client
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - git
+      # pxc_scheduler_handler go.mod says `go 1.26.5`; the official binary was built with go1.26.5
+      - go-1.26
+
+pipeline:
+  # proxysql-admin-tool has no v3.0.9 tag; the rpm (proxysql3-3.0.9-1.1) was built from branch v3.0.9-dev at
+  # pat_commit (the vcs.revision recorded in the official pxc_scheduler_handler binary). Fetched by hash.
+  - name: Fetch proxysql-admin-tool (pinned commit)
+    runs: |
+      set -eu
+      mkdir pat-src && cd pat-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/proxysql-admin-tool @@pat_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@pat_commit@@"
+      # the percona-scheduler submodule pointer must be the commit pinned in the version file
+      test "$(git ls-tree HEAD percona-scheduler | awk '{print $3}')" = "@@pxc_scheduler_handler_commit@@"
+
+  - name: Fetch pxc_scheduler_handler (submodule commit)
+    runs: |
+      set -eu
+      mkdir psh-src && cd psh-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/pxc_scheduler_handler @@pxc_scheduler_handler_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@pxc_scheduler_handler_commit@@"
+
+  # The rpm also ships tools/proxysql_galera_checker.sh and tools/proxysql_galera_writer.pl of the ProxySQL
+  # source tree (sysown/proxysql at proxysql_commit, the v3.0.9 tag); only those two files are fetched.
+  - uses: fetch
+    with:
+      uri: https://raw.githubusercontent.com/sysown/proxysql/@@proxysql_commit@@/tools/proxysql_galera_checker.sh
+      expected-sha256: @@proxysql_galera_checker_sha256@@
+      extract: false
+  - uses: fetch
+    with:
+      uri: https://raw.githubusercontent.com/sysown/proxysql/@@proxysql_commit@@/tools/proxysql_galera_writer.pl
+      expected-sha256: @@proxysql_galera_writer_sha256@@
+      extract: false
+
+  # build_scheduler.sh: `go mod tidy; go build -v -a -ldflags "-X main.pxcSchedulerHandlerVersion=$PROXYSQL_ADMIN_VERSION"`.
+  # Here: no `go mod tidy` (go.sum is complete; -mod=readonly), -trimpath and -buildvcs=false for
+  # reproducibility, -s -w strips the symbol tables. cgo stays on as in the official binary.
+  - name: Build pxc_scheduler_handler
+    runs: |
+      set -eu
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      export CGO_ENABLED=1 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
+      export GOMODCACHE=/var/cache/melange/gomodcache
+      grep -qx 'readonly    PROXYSQL_ADMIN_VERSION="@@pat_version@@"' pat-src/proxysql-common
+      cd psh-src
+      go build -trimpath -buildvcs=false \
+        -ldflags "-s -w -X main.pxcSchedulerHandlerVersion=@@pat_version@@" \
+        -o ../pxc_scheduler_handler .
+
+  # Layout of the proxysql3 rpm (proxysql-packaging rpm/proxysql.spec, branch v3.0). /var/lib/proxysql,
+  # /var/run/proxysql and /var/run/pxc_scheduler_handler are created by the image (see the image template).
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      for f in proxysql-admin proxysql-admin-common proxysql-common proxysql-login-file proxysql-status percona-scheduler-admin; do
+        install -Dm0755 "pat-src/$f" "$d/usr/bin/$f"
+      done
+      install -Dm0755 pxc_scheduler_handler "$d/usr/bin/pxc_scheduler_handler"
+      install -Dm0755 proxysql_galera_checker.sh "$d/usr/bin/proxysql_galera_checker"
+      install -Dm0755 proxysql_galera_writer.pl "$d/usr/bin/proxysql_galera_writer"
+      # rpm %post copies this to /etc/proxysql-admin.cnf when missing; the image ships its own (docker scripts)
+      install -Dm0640 pat-src/proxysql-admin.cnf "$d/usr/share/proxysql/etc/proxysql-admin.cnf.in"
+      # pxc_scheduler_handler configuration (rpm: %attr(644, root, proxysql) /etc/config.toml)
+      install -Dm0644 pat-src/config.toml "$d/etc/config.toml"
+      install -Dm0644 pat-src/proxysql-logrotate "$d/etc/logrotate.d/proxysql-logrotate"
+      install -Dm0644 pat-src/LICENSE "$d/usr/share/licenses/percona-proxysql-admin/LICENSE"
+
+  - name: Build-path leak scan
+    runs: |
+      bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - percona-proxysql-admin
+  pipeline:
+    - name: versions
+      runs: |
+        proxysql-admin --version | grep -x 'proxysql-admin version @@pat_version@@'
+        percona-scheduler-admin --version | grep -x 'percona-scheduler-admin Version: @@pat_version@@'
+        pxc_scheduler_handler --version | grep -F 'PXC Scheduler Handler Version:  @@pat_version@@'
+    - name: scripts parse
+      runs: |
+        for f in proxysql-admin proxysql-admin-common proxysql-common proxysql-login-file proxysql-status \
+          percona-scheduler-admin proxysql_galera_checker; do
+          bash -n "/usr/bin/$f"
+        done
+        head -n1 /usr/bin/proxysql_galera_writer | grep -q perl
+        proxysql-admin --help > /dev/null
+        command -v mysql getopt column openssl
+    - name: files
+      runs: |
+        test -f /usr/share/proxysql/etc/proxysql-admin.cnf.in
+        grep -q "^export PROXYSQL_PORT='6032'" /usr/share/proxysql/etc/proxysql-admin.cnf.in
+        grep -q '^\[pxccluster\]' /etc/config.toml
+        test -f /etc/logrotate.d/proxysql-logrotate
+
+update:
+  enabled: false

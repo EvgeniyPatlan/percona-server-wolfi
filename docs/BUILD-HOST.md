@@ -613,6 +613,25 @@ call (`python3`, `curl`, `mysqlrouter_passwd`), the entrypoint refusing to start
 against a three-member InnoDB Cluster (built with the -dev image, `tests/image/gr-lib.bash` `gr_cluster`): 6446
 reaches the primary, 6447 a secondary, a write through 6446 is read through 6447, 6447 refuses writes.
 
+## ProxySQL (`percona-proxysql-admin`, `percona-proxysql-docker-scripts`, `make test-proxysql`)
+
+ProxySQL itself is Wolfi's `proxysql` package (pinned `proxysql_wolfi_version`; built from the same upstream tag as
+Percona's `proxysql3` rpm, see `docs/deviations.md`), so nothing heavy is compiled here. `percona-proxysql-admin` fetches
+`percona/proxysql-admin-tool` at `pat_commit` and its `percona-scheduler` submodule (`percona/pxc_scheduler_handler` at
+`pxc_scheduler_handler_commit`, checked against the submodule pointer) by hash and builds `pxc_scheduler_handler` with
+Wolfi `go-1.26` (module cache in the melange cache); two small files of the ProxySQL tree are fetched by sha256.
+`percona-proxysql-docker-scripts` needs `percona-server-server` from the local repo (its `my_print_defaults`). Both
+are small (a minute each):
+
+    make pkg-percona-proxysql-admin pkg-percona-proxysql-docker-scripts
+    make test-proxysql IMAGE=localhost:5000/percona-server:9.7-dev PROXYSQL_IMAGE=localhost:5000/percona-proxysql3:3.0 report
+
+`tests/image/proxysql.bats` (3 tests, about 2 minutes, docker only): versions of ProxySQL, the admin tools, the mysql
+client and `my_print_defaults`, the helpers they call, uid 1001; the image started offline (`--network none`) with the
+shipped configuration, admin interface on 6032 with the password from `PROXY_ADMIN_PASSWORD`, the entrypoint's
+interfaces (3306, 33062) and monitor password loaded; a `-dev` server added on 6032 (TLS backend, `use_ssl=1`, for the
+`caching_sha2_password` account) and queried and written through 3306 and 33062.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime

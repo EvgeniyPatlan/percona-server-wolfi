@@ -1,0 +1,110 @@
+# percona-proxysql3:@@proxysql_version@@ - drop-in replacement for the official percona/proxysql3:3.0.9-1.1 (percona-docker
+# proxysql/Dockerfile-proxysql3 at percona_docker_commit), the ProxySQL image of the PXC operator. Built by
+# scripts/apko-build.sh; the package set is pinned by images/percona-proxysql3.lock.json. Differences:
+# docs/deviations.md ("proxysql" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # entrypoint.sh and the operator's scripts: bash, sed, hostname -f, timeout (busybox)
+    - busybox
+    - bash
+    - coreutils
+    - findutils
+    # Dockerfile: jq util-linux which hostname procps-ng tar (+ shadow-utils, krb5-libs, cpio: build-time only here)
+    - jq
+    - util-linux-misc
+    - procps
+    - gnutar
+    - glibc-locale-en
+    # proxysql-admin checks for an OpenSSL 3 executable; add_cluster_nodes.sh calls curl
+    - openssl
+    - curl
+    - ca-certificates-bundle
+    # Dockerfile: proxysql3 rpm = ProxySQL (Wolfi package, same upstream v3.0.9) + Percona's admin tools (built here)
+    - proxysql=@@proxysql_wolfi_version@@
+    - percona-proxysql-admin
+    # Dockerfile: percona-xtradb-cluster-client (only mysql and mysqldump kept) and my_print_defaults from the
+    # server rpm; here the client of this repository's Percona Server and my_print_defaults alone
+    - percona-server-client
+    - percona-proxysql-my-print-defaults
+    - percona-proxysql-docker-scripts
+
+# Dockerfile: groupadd -g 1001 proxysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -c "Default Application User" proxysql
+# (no -m: /home/proxysql does not exist in the official image either)
+accounts:
+  groups:
+    - groupname: proxysql
+      gid: 1001
+  users:
+    - username: proxysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/proxysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: `install -o 1001 -g 0 -m 775 -d /etc/proxysql /var/lib/proxysql`; the rpm's
+# /var/run/proxysql and /var/run/pxc_scheduler_handler (owned by proxysql; /var/run -> /run on Wolfi).
+# VOLUME /var/lib/proxysql and EXPOSE 3306 6032 cannot be declared by apko.
+paths:
+  - path: /etc/proxysql
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /var/lib/proxysql
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /run/proxysql
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /run/pxc_scheduler_handler
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/proxysql/proxysql.cnf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o664
+  - path: /etc/proxysql-admin.cnf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o664
+
+entrypoint:
+  command: /entrypoint.sh
+cmd: /usr/bin/proxysql -f -c /etc/proxysql/proxysql.cnf --reload
+work-dir: /
+
+# Dockerfile ENV; values are ours: PXC_VERSION is the version of the mysql client shipped (Percona Server here),
+# PROXYSQL_VERSION the upstream ProxySQL version (no Percona rpm release).
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  PXC_VERSION: "@@ps_version@@-@@ps_release@@"
+  PROXYSQL_VERSION: "@@proxysql_version@@"
+  OS_VER: wolfi
+  FULL_PERCONA_VERSION: "@@ps_version@@-@@ps_release@@.wolfi"
+  FULL_PROXYSQL_VERSION: "@@proxysql_version@@.wolfi"
+  ARCH: x86_64
+
+annotations:
+  org.opencontainers.image.title: percona-proxysql3
+  org.opencontainers.image.description: ProxySQL @@proxysql_version@@ with Percona's proxysql-admin tools @@pat_version@@ on Wolfi (drop-in for percona/proxysql3:3.0.9-1.1). Not an official Percona image.
+  org.opencontainers.image.version: "@@proxysql_version@@"
+  org.opencontainers.image.licenses: GPL-3.0-or-later AND GPL-2.0-only
+
+archs:
+  - x86_64
