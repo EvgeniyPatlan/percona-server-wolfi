@@ -21,7 +21,7 @@ Effort is a rough estimate (S, M, L).
 | 2 | ~~MySQL Router 9.7~~ **done** | PS operator (group replication routing) | `percona-mysql-router`, a subpackage of the `percona-server` recipe (same source tree), and `percona-mysql-router-docker-scripts` | `percona-mysql-router:9.7` (router, mysqlsh with the jit library by owner ruling, entrypoint) | none | S-M |
 | 3 | Orchestrator | PS operator (async replication) | `percona-orchestrator`, `percona-orchestrator-client` (Go, `percona/orchestrator`) | `percona-orchestrator` | none | M |
 | 4 | HAProxy, operator flavour | PS and PXC operators | Wolfi `haproxy-3.x` instead of Percona's `percona-haproxy` rpm, plus the operator check scripts | `haproxy` | haproxy 3.2/3.3 | S |
-| 5 | Percona Toolkit | PS and PXC operators (toolkit image, pt-heartbeat, ...) | `percona-toolkit` (Perl) and `perl-DBD-mysql` against `percona-server-libs` | `percona-toolkit` | neither | M |
+| 5 | ~~Percona Toolkit~~ **done** | PS and PXC operators (toolkit image, pt-heartbeat, ...) | `percona-toolkit` (Perl and Go tools) and `perl-dbd-mysql` against `percona-server-dev`/`-libs` | `percona-toolkit:3.7` | neither | M |
 | 6 | Percona Binlog Server | PS operator (binlog storage, PITR) | `percona-binlog-server` (C++, 0.x) | `percona-binlog-server` | none | M |
 | 7 | Log collector | both operators | Wolfi `fluent-bit` and `supercronic`, PS client, logrotate | `fluentbit` (logcollector) | fluent-bit, supercronic | S |
 | 8 | Operator binaries | both operators | `percona-server-mysql-operator`, `percona-xtradb-cluster-operator` (Go) | operator images | none (only the MongoDB operator) | S each |

@@ -9,7 +9,8 @@
 #      out/results/<name>.digest (compare runs with `scripts/verify-repro.sh images`).
 # Tags: percona-server:<series>, :<ps_version>-<ps_release> (+ -<BUILD_ID> when set); the -dev image is the same
 # repository with a -dev suffix; percona-xtrabackup:<series>, :<pxb_version>-<pxb_release>;
-# percona-mysql-router:<series>, :<ps_version>-<ps_release> (the router is built from the server tree).
+# percona-mysql-router:<series>, :<ps_version>-<ps_release> (the router is built from the server tree);
+# percona-toolkit:<pt series>, :<pt_version>-<pt_release> (its own version line, e.g. 3.7 and 3.7.1-4).
 # Reproducible inputs: build date from source_date_epoch, VCS autodetection off, the revision annotation is the last
 # commit that touched the build inputs or images/*.tmpl (<sha>-dirty when those have uncommitted changes; RELEASE=1
 # refuses that unless ALLOW_DIRTY=1).
@@ -21,7 +22,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/keys.sh"
 cd "$here/.."
 
-usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router> [--no-publish]"; }
+usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-toolkit> [--no-publish]"; }
 (($#)) || usage
 name=$1
 shift
@@ -56,6 +57,9 @@ case $name in
   percona-xtrabackup) repo_name=percona-xtrabackup suffix='' full=$(v pxb_version)-$(v pxb_release) forbid=$dev_only ;;
   percona-mysql-router) repo_name=percona-mysql-router suffix='' full=$ps_full
     forbid='percona-telemetry-agent|percona-server-docker-scripts|percona-xtrabackup-docker-scripts|percona-server-server' ;;
+  # toolkit: Perl and shells are what the image is for; no server, no mysqlsh, no telemetry agent, no other image's scripts
+  percona-toolkit) repo_name=percona-toolkit suffix='' full=$(v pt_version)-$(v pt_release) series=$(v pt_version | cut -d. -f1-2)
+    forbid="$dev_only|percona-server-server|percona-server-docker-scripts|percona-xtrabackup-docker-scripts" ;;
   *) die "unknown image: $name" ;;
 esac
 

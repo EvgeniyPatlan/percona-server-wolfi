@@ -66,6 +66,26 @@ pxb_sphinx_python: "3.13"
 telemetry_agent_version: "1.0.20"
 telemetry_agent_commit: "33457ea97dd22dd22b0c5b9e9ee0f65314135691"
 
+# --- Percona Toolkit (github.com/percona/percona-toolkit) ---
+# percona-docker percona-toolkit/Dockerfile at percona_docker_commit: PT_VERSION 3.7.1-4.el9 (rpm percona-toolkit-3.7.1-4)
+# VERIFY-BEFORE-RELEASE: Docker Hub :3.7 / :latest moved to 3.7.2-1 (2026-10-22, not yet in the pinned Dockerfile)
+pt_tag: "v3.7.1-4"
+# peeled commit of the tag (tag object 40e1d6cfc4e1...)
+pt_commit: "36165fcaafe7e9aff4a2667828e76c22fca1069a"
+pt_version: "3.7.1"
+pt_release: "4"
+# committer time of pt_commit (2026-07-03T15:01:03Z): build date stamped into the Go tools
+pt_source_date_epoch: "1783090863"
+# Go of the Go tools: go.mod says `go 1.26.4` (the official binaries report go1.26.4); Wolfi go-1.26
+pt_go: "1.26"
+
+# --- DBD::mysql (CPAN, DVEEDEN/DBD-mysql) for the toolkit, built against percona-server-dev ---
+# official toolkit image: perl-DBD-MySQL 5.011 (el9); 5.014 is the current release (MySQL 9.7 in its CI, segfault and
+# reconnect fixes), see docs/deviations.md
+dbd_mysql_version: "5.014"
+dbd_mysql_url: "https://cpan.metacpan.org/authors/id/D/DV/DVEEDEN/DBD-mysql-5.014.tar.gz"
+dbd_mysql_sha256: "c5fee5207e6a340e59cfa67df211698271f7b4c885f740e52bb5c2c3a10df55c"
+
 # --- call-home.sh (github.com/Percona-Lab/telemetry-agent tag phase-0.1) ---
 call_home_version: "0.1"
 call_home_url: "https://github.com/Percona-Lab/telemetry-agent/archive/refs/tags/phase-0.1.tar.gz"
@@ -101,5 +121,7 @@ official_ps_image: "docker.io/percona/percona-server@sha256:7b1225974980bfb2f7ed
 official_pxb_image: "docker.io/percona/percona-xtrabackup@sha256:07e883d6aab312ba14a5bf47d8d647690ce0db10a083d9d2d572c19c84884b4b"
 # percona/percona-mysql-router:9.7 == 9.7.2-3 == 9.7.2-3.1 (index digest, 2026-11-16)
 official_router_image: "docker.io/percona/percona-mysql-router@sha256:a1ecf51e0688b8a6e5e9b4f344d6f255585836a4f64e0ccd4a02df9cdf773296"
+# percona/percona-toolkit:3.7.1-4 (index digest, 2026-11-17): the PT_VERSION of the pinned Dockerfile
+official_pt_image: "docker.io/percona/percona-toolkit@sha256:9ed7a2025946ed326fb26fbfa45b49c81658be5bfe87a0ba5c34441df05e8dde"
 # previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
 official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"

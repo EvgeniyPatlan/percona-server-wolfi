@@ -1,7 +1,7 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
-Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9.7 from source as Wolfi apk packages
-(melange) and assembles four container images from them (apko). Not an official Percona image.
+Builds Percona Server for MySQL 9.7 (with MySQL Router), Percona XtraBackup 9.7 and Percona Toolkit 3.7 from source as Wolfi apk packages
+(melange) and assembles five container images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
@@ -9,6 +9,7 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
 | `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
 | `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
+| `percona-toolkit:3.7` | Drop-in replacement for the official `percona/percona-toolkit:3.7.1-4`: all 42 `pt-*` tools (Perl, shell and Go), DBD::mysql and the Percona Server client; the Percona Operator's `pt-heartbeat` sidecar runs from it. |
 
 ## Packages
 
@@ -25,6 +26,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
 | `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
 | `percona-mysql-router-docker-scripts` | Entrypoint script of the router image from percona-docker |
+| `perl-dbd-mysql` | DBD::mysql from CPAN, built against `percona-server-dev` (not in Wolfi), for the toolkit |
+| `percona-toolkit` | Percona Toolkit: the Perl/shell tools and the Go tools the rpm ships; subpackages `-doc` (man pages), `-docker-license` |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -44,10 +47,11 @@ template or lock file changed or its digest is not in the registry. It re-locks 
 matches the apks (commit the rewritten lock file).
 
     scripts/build.sh -n                       # show the plan: BUILD/SKIP for each package and image, with the reason
-    scripts/build.sh                          # build what is needed for all four images
+    scripts/build.sh                          # build what is needed for all five images
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
     scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
     scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
+    scripts/build.sh percona-toolkit          # only the toolkit image (server build, DBD::mysql, toolkit)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -195,6 +199,19 @@ With a cluster on the docker network `db` (members reachable by name, `n1` one o
 
 The image also has MySQL Shell (`docker exec -it router mysqlsh`), `python3` and `curl`, which the Percona Operator's
 router scripts use. A cluster can be created from the `:9.7-dev` image with `mysqlsh` (`dba.createCluster`).
+
+### `percona-toolkit:3.7`: Percona Toolkit
+
+    TOOLKIT=localhost:5000/percona-toolkit:3.7
+
+As the official image: no entrypoint, `bash` by default, user `perconatoolkit` (uid 1001, gid 0). Run a tool against
+a server on the docker network `db`:
+
+    docker run --rm --network db $TOOLKIT pt-mysql-summary --host db1 --user root --ask-pass
+    docker run --rm --network db $TOOLKIT pt-online-schema-change --alter 'ADD COLUMN c INT' D=app,t=t1,h=db1,u=root --ask-pass --dry-run
+
+The Percona Server operator (`spec.toolkit.image`) runs its `pt-heartbeat` sidecar from this image with its own
+`/opt/percona/heartbeat-entrypoint.sh`, which needs `bash`, `timeout`, `mysql` and `pt-heartbeat` (all here).
 
 ## Official image vs this build
 

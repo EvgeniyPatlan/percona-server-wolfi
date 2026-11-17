@@ -1,0 +1,62 @@
+# percona-toolkit:@@pt_version@@-@@pt_release@@ - drop-in replacement for the official percona/percona-toolkit:@@pt_version@@-@@pt_release@@
+# (percona-docker percona-toolkit/Dockerfile at percona_docker_commit). Built by scripts/apko-build.sh; the package set
+# is pinned by images/percona-toolkit.lock.json. Differences: docs/deviations.md ("toolkit" rows).
+# The Percona Operator for MySQL runs its pt-heartbeat sidecar from this image (command
+# /opt/percona/heartbeat-entrypoint.sh of the operator: bash, timeout, mysql, sed, tr, pt-heartbeat).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # ubi9-minimal: bash (CMD), coreutils-single, findutils, gawk (/usr/bin/awk: pt-mysql-summary needs GNU awk), grep,
+    # sed, curl-minimal, ca-certificates
+    - busybox
+    - bash
+    - coreutils
+    - findutils
+    - gawk
+    - grep
+    - sed
+    - curl
+    - ca-certificates-bundle
+    # Dockerfile: glibc-langpack-en, tar, hostname (busybox), percona-server-client, percona-toolkit
+    - glibc-locale-en
+    - gnutar
+    # pt-summary, pt-stalk and pt-pmp read the process list (not in ubi9-minimal: deviation)
+    - procps
+    - percona-server-client
+    - percona-toolkit
+    - percona-toolkit-docker-license
+
+# Dockerfile: useradd -u 1001 -r -g 0 -s /sbin/nologin -c "Default Application User" perconatoolkit; USER 1001
+accounts:
+  users:
+    - username: perconatoolkit
+      uid: 1001
+      gid: 0
+      homedir: /home/perconatoolkit
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# no ENTRYPOINT; CMD of ubi9-minimal
+cmd: /bin/bash
+work-dir: /
+
+# Dockerfile ENV (+ container=oci from ubi9); values are ours: the client is this repository's Percona Server
+# @@ps_version@@-@@ps_release@@, the OS suffix wolfi instead of el9.
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  container: oci
+  PS_VERSION: "@@ps_version@@-@@ps_release@@.wolfi"
+  PT_VERSION: "@@pt_version@@-@@pt_release@@.wolfi"
+
+annotations:
+  org.opencontainers.image.title: percona-toolkit
+  org.opencontainers.image.description: Percona Toolkit @@pt_version@@-@@pt_release@@ from source on Wolfi, with DBD::mysql and the Percona Server @@ps_version@@ client (drop-in for percona/percona-toolkit:@@pt_version@@-@@pt_release@@). Not an official Percona image.
+  org.opencontainers.image.version: "@@pt_version@@-@@pt_release@@"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64
