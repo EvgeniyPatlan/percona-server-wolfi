@@ -4,7 +4,8 @@ setup() {
   ROOT=$(cd "$BATS_TEST_DIRNAME/../.." && pwd)
   TMP=$BATS_TEST_TMPDIR
   mkdir -p "$TMP/img" "$TMP/kd"
-  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router; do
+  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-xtradb-cluster \
+    percona-xtradb-cluster-backup; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -103,6 +104,20 @@ STUB
   [[ $line == *"localhost:5000/percona-mysql-router:9.7 "* ]]
   [[ $line == *"localhost:5000/percona-mysql-router:$v "* ]]
   [[ $line == *"localhost:5000/percona-mysql-router:$v-7"* ]]
+}
+
+@test "PXC images are tagged with the PXC version in their own repositories" {
+  v=$(grep '^pxc_version:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)-$(grep '^pxc_release:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  v=$v.$(grep '^pxc_rpm_release:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  for n in percona-xtradb-cluster percona-xtradb-cluster-backup; do
+    rm -f "$TMP/calls"
+    BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" "$n"
+    [ "$status" -eq 0 ]
+    line=$(grep -E -- ' publish ' "$TMP/calls")
+    [[ $line == *"localhost:5000/$n:9.7 "* ]]
+    [[ $line == *"localhost:5000/$n:$v "* ]]
+    [[ $line == *"localhost:5000/$n:$v-7"* ]]
+  done
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -262,6 +277,31 @@ mkgit_img() {
   rm -f "$TMP/img/percona-mysql-router.lock.json"
   LOCK_PKGS='{"name":"percona-mysql-router"},{"name":"percona-mysql-shell"},{"name":"percona-mysql-shell-jit"}' \
     run "$ROOT/scripts/apko-build.sh" percona-mysql-router
+  [ "$status" -eq 0 ]
+}
+
+@test "PXC package rules: no Percona Server server/library packages, no mysqlsh, no other image's scripts" {
+  for p in percona-server-server percona-server-libs percona-server-client percona-server-docker-config \
+    percona-mysql-shell percona-xtradb-cluster-backup-scripts percona-xtrabackup-docker-scripts; do
+    rm -f "$TMP/img/percona-xtradb-cluster.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-xtradb-cluster
+    [ "$status" -ne 0 ]
+    [[ $output == *"$p"* ]]
+  done
+  rm -f "$TMP/img/percona-xtradb-cluster.lock.json"
+  LOCK_PKGS='{"name":"percona-xtradb-cluster-server"},{"name":"percona-xtrabackup"},{"name":"percona-telemetry-agent"},{"name":"percona-xtradb-cluster-docker-scripts"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-xtradb-cluster
+  [ "$status" -eq 0 ]
+  # backup image: garbd, xtrabackup and the client, but no PXC server, telemetry agent or server-image scripts
+  for p in percona-xtradb-cluster-server percona-telemetry-agent percona-xtradb-cluster-docker-config \
+    percona-xtradb-cluster-docker-scripts percona-server-libs; do
+    rm -f "$TMP/img/percona-xtradb-cluster-backup.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-xtradb-cluster-backup
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-xtradb-cluster-backup.lock.json"
+  LOCK_PKGS='{"name":"percona-xtradb-cluster-garbd"},{"name":"percona-xtrabackup"},{"name":"percona-xtradb-cluster-client"},{"name":"percona-xtradb-cluster-backup-scripts"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-xtradb-cluster-backup
   [ "$status" -eq 0 ]
 }
 

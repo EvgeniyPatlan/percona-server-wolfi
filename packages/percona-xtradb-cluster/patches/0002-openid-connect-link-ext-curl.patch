@@ -1,0 +1,20 @@
+Subject: auth_openid_connect links ext::curl instead of the bare library name "curl"
+Error: plugin/auth_openid_connect/src/plugin_openid_connect.cc:18:10: fatal error: curl/curl.h: No such file or directory
+Why: LINK_LIBRARIES "curl" is a plain -lcurl (system libcurl). With WITH_CURL=bundled (OpenSSL ruling,
+  docs/deviations.md: Wolfi's curl-dev needs the OpenSSL 4 headers) curl's include dir and the bundled static
+  library come only from the ext::curl target, which keyring_vault and keyring_kms already link. Build-only fix:
+  same curl, linked the way the other curl users in the tree do it.
+Upstream: none found (searched the percona-xtradb-cluster tree at the pinned tag)
+Drop-when: (same patch as packages/percona-server/patches) auth_openid_connect links ext::curl upstream, or the recipe goes back to WITH_CURL=system
+
+--- a/plugin/auth_openid_connect/CMakeLists.txt
++++ b/plugin/auth_openid_connect/CMakeLists.txt
+@@ -31,7 +31,7 @@
+ 
+     MYSQL_ADD_PLUGIN(auth_openid_connect
+             ${AUTH_OPENID_CONNECT_SOURCES}
+-            LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto curl
++            LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto ext::curl
+             SYSTEM_INCLUDE_DIRECTORIES "${JWT_CPP_INCLUDE_DIR}"
+             MODULE_ONLY MODULE_OUTPUT_NAME "auth_openid_connect"
+     )

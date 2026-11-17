@@ -180,13 +180,14 @@ and runs the recipe's melange tests. It requires `MIN_GB=100` free by default; o
 The server, mysqlsh and XtraBackup recipes clone large repositories with submodules (percona-server with RocksDB,
 percona-xtrabackup). `make git-mirrors` (first step after `sources` in `phase-a` and in `scripts/build.sh`) keeps bare
 mirrors in `out/cache/git/<host>/<path>.git` (`scripts/git-mirror.sh`): the superproject at its pinned tag
-(`ps_tag`/`ps_commit`, `pxb_tag`/`pxb_commit`) and, for every submodule, only the commit it pins (shallow fetch).
+(`ps_tag`/`ps_commit`, `pxb_tag`/`pxb_commit`, `pxc_tag`/`pxc_commit`) and, for every submodule, only the commit it pins (shallow fetch).
 `scripts/melange-build.sh` then passes git `url.<mirror>.insteadOf` rules to the build (env file, excluded from the
 recorded config), so melange's `git-checkout` clones from disk. The recipes keep their GitHub URLs, tags and
 `expected-commit` checks; the source tree is the same.
 
     make git-mirrors                                   # network: shallow fetch of the pinned tags and submodule commits
     make git-mirrors PS_SEED=/path/to/percona-server   # superproject from an existing local clone (no network for it)
+    make git-mirrors PXC_SEED=/path/to/percona-xtradb-cluster   # same for PXC (galera -> wsrep-API nested submodules too)
 
 Mirrors that already hold the pinned commits are not touched, so later builds need no GitHub access for these
 sources; after a pin bump only the new commits are fetched. `GIT_MIRRORS=0` makes a build clone from the network.
@@ -612,6 +613,64 @@ router-named left in the server tree as `ROUTER-LEFTOVER`. The image adds the of
 call (`python3`, `curl`, `mysqlrouter_passwd`), the entrypoint refusing to start without `MYSQL_*`, and a bootstrap
 against a three-member InnoDB Cluster (built with the -dev image, `tests/image/gr-lib.bash` `gr_cluster`): 6446
 reaches the primary, 6447 a secondary, a write through 6446 is read through 6447, 6447 refuses writes.
+
+## Percona XtraDB Cluster (`percona-xtradb-cluster`, `make test-pxc`)
+
+Needs `mecab` and `percona-xtrabackup` (and so `percona-server`) in `out/repo`: MeCab is a build dependency, XtraBackup
+a runtime dependency of `-server` (SST) and part of the smoke test. Build order, after the packages above:
+
+    make git-mirrors                                    # once: PXC superproject + galera, wsrep-lib, wsrep-API, ...
+    make pkg-percona-xtradb-cluster report              # 2-4 hours, ~25 GB workspace (LTO, like percona-server)
+    make pkg-percona-xtradb-cluster-docker-scripts
+    make image-percona-xtradb-cluster image-percona-xtradb-cluster-backup image-percona-xtrabackup
+    make test-pxc report
+
+What the recipe does: `git-checkout` of `pxc_tag` with submodules (Galera with its wsrep-API, wsrep-lib with its
+wsrep-API, coredumper, libkmip, jwt-cpp), checks `MYSQL_VERSION`, every submodule commit (`galera_commit`,
+`wsrep_lib_commit`, `wsrep_api_commit`), `GALERA_VERSION` and the WSREP version of the compilation comment, applies
+`packages/percona-xtradb-cluster/patches/`, then one CMake/Ninja build with the RPM spec's release flags (Galera and
+garbd are part of it; their revision is pinned through `pxc-build/GALERA_GIT_REVISION`), install, RPM layout and the
+split (`-server`, `-galera`, `-garbd`, `-libs`, `-client`, `-dev`, `-test`, `-icu-data-files`, `-scripts`, `-dbg`).
+`melange test` runs `packages/percona-xtradb-cluster/tests/smoke.sh`: versions (`mysqld`, `garbd`), RPM paths,
+`pxc_extra/pxb-9.7` resolving to XtraBackup, `ldd`, then a single-node cluster on the Galera provider (Synced, size 1,
+Primary, provider and WSREP versions, `pxc_strict_mode`, `safe_to_bootstrap: 1` after shutdown), and the hardening
+step (also for `garbd` and `libgalera_smm.so`).
+
+`tests/image/pxc.bats` (6 tests, about 10-15 minutes, docker only): versions, user and tools of the image; the
+entrypoint refusing an uninitialized datadir without a password option; a single node bootstrapped by the entrypoint
+(users, `wsrep_node_address` from `hostname -i`); three nodes joining by `CLUSTER_JOIN` with SST by xtrabackup-v2, a
+write on one node and one on another seen on all three, garbd from the backup image counted as a fourth member and
+leaving cleanly; the backup image's tools and scripts; garbd in the XtraBackup image. Cluster traffic encryption is off
+in the tests (`--pxc-encrypt-cluster-traffic=OFF`), as each node would otherwise need the same CA.
+
+Host checks after the first green build (record results in the task report):
+
+1. `mysqld --version` and `SELECT @@version_comment` vs the official image (`official_pxc_image`): same `9.7.2-2.1`,
+   `Revision e648f701` (or the length the official one uses), `WSREP version 26.1.4.3`; `garbd --version` and
+   `wsrep_provider_version` (`4.27(r13ff9ed)`?).
+2. The build log: no `UNEXPECTED-PATH` lines (or each explained), no `BUILD-PATH LEAK`, the `SCRIPT (moved into
+   percona-xtradb-cluster-scripts)` list (perl/python files only).
+3. File lists vs the official rpms (`docker run --rm --entrypoint sh <official_pxc_image> -c 'rpm -qla | sort'`).
+4. `.PKGINFO` of `-server`: the `depend =` lines must not name a library that only lives in `/usr/lib/mysql/private`;
+   `-server` must not depend on perl or python; `percona-xtrabackup` must not pull `percona-server-libs` (it would
+   conflict with `percona-xtradb-cluster-libs` in the PXC images).
+
+Likely first-build issues (the percona-server build of the same 9.7.2-2 tree hit GCC 16 / OpenSSL 3.6 issues that are
+fixed there; check `packages/percona-server/patches/` first):
+
+- Galera with GCC 16: missing `<cstdint>`/`<cstring>` includes, `-Werror` from Galera's own flags (Galera's
+  `cmake/compiler.cmake`; `GALERA_MAINTAINER_MODE` is off), deprecated `asio` usage: a patch in
+  `packages/percona-xtradb-cluster/patches/` (header as in the README there);
+- Galera and Boost: garbd links Wolfi's `libboost_program_options` (Boost 1.9x) while the server uses the in-tree Boost
+  1.87 headers; a header/library mismatch shows as undefined `boost::program_options` symbols when garbd links: then
+  make Galera use the in-tree headers only for its other targets, or pin `boost-dev` to a matching version;
+- `find_package(Boost)` or `check` not found: send `apk info -L boost-dev check-dev`;
+- OpenSSL: Galera's `cmake/ssl.cmake` must find the 3.6 headers (the Configure step asserts OpenSSL 3); a link against
+  OpenSSL 4 from `libldap` shows as two libssl versions in `ldd libgalera_smm.so`;
+- the `pin` checks fail: the submodule commits in `versions/9.7.yaml` are wrong for the tag (send the reported value);
+- `garbd` or `libgalera_smm.so` not installed by `cmake --install`: the recipe falls back to the build tree
+  (`pxc-build/percona-xtradb-cluster-galera/`); if both are missing, send `find pxc-build -name garbd -o -name 'libgalera*'`;
+- smoke test: if the single node never reaches `Synced`, send the mysqld error log the step prints.
 
 ## Compatibility diff against the official image (`make test-compat`)
 

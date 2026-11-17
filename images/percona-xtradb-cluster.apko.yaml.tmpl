@@ -1,0 +1,188 @@
+# percona-xtradb-cluster:@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@ - drop-in replacement for the official
+# percona/percona-xtradb-cluster:9.7 (percona-docker percona-xtradb-cluster-9.x/Dockerfile at percona_docker_commit,
+# plus the tools Dockerfile.k8s adds for the PXC operator: iproute). Built by scripts/apko-build.sh; the package set is
+# pinned by images/percona-xtradb-cluster.lock.json. Differences: docs/deviations.md ("PXC" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # entrypoint.sh and the dockerdir scripts: bash, hostname -i/-f, mktemp, sed, awk (busybox)
+    - busybox
+    - bash
+    - coreutils
+    - findutils
+    # Dockerfile: jemalloc numactl-libs jq socat cyrus-sasl krb5-libs openssl shadow-utils hostname tzdata diffutils
+    # libaio which nc pam procps-ng libatomic zstd tar (+ pv, libev, tcmalloc); Dockerfile.k8s: iproute
+    - jq
+    - socat
+    - openssl
+    - tzdata
+    - diffutils
+    - netcat-openbsd
+    - procps
+    - zstd
+    - gnutar
+    - pv
+    - iproute2
+    - curl
+    - ca-certificates-bundle
+    # LD_PRELOAD targets of the operator (mysqlAllocator): /usr/lib64/libjemalloc.so.2 and /usr/lib64/libtcmalloc.so
+    # (the latter from percona-xtradb-cluster-docker-scripts, pointing at tcmalloc)
+    - libjemalloc2
+    - tcmalloc
+    # Dockerfile: percona-xtradb-cluster-server, -shared, -client, -client-plugins, -icu-data-files (-shared and
+    # -client-plugins are -libs here); the server brings the Galera provider and, for SST, percona-xtrabackup
+    - percona-xtradb-cluster-server
+    - percona-xtradb-cluster-galera
+    - percona-xtradb-cluster-libs
+    - percona-xtradb-cluster-client
+    - percona-xtradb-cluster-icu-data-files
+    - percona-xtrabackup
+    # Dockerfile: percona-telemetry-agent (+ /call-home.sh); the PXC telemetry-agent-supervisor.sh comes with the
+    # docker scripts (it replaces the percona-server variant shipped by percona-telemetry-agent)
+    - percona-telemetry-agent
+    # entrypoint.sh, unsafe-bootstrap.sh, dockerdir/, /etc/my.cnf, /etc/mysql/node.cnf
+    - percona-xtradb-cluster-docker-scripts
+    - percona-xtradb-cluster-docker-config
+
+# Dockerfile: groupadd -g 1001 mysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -c "Default Application User" mysql
+# (no -m: no home directory)
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: mkdir -p /etc/mysql/conf.d/ /var/log/mysql /var/lib/mysql /docker-entrypoint-initdb.d
+# /etc/percona-xtradb-cluster.conf.d; chown -R 1001:1001 (+ /etc/mysql/); chmod -R g=u. apko does not keep the owners
+# recorded in the apks (it keeps the modes): every non-root owner is applied here.
+paths:
+  - path: /var/lib/mysql
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /var/log/mysql
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /docker-entrypoint-initdb.d
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /etc/mysql
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /etc/mysql/conf.d
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /etc/mysql/node.cnf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o664
+  - path: /etc/percona-xtradb-cluster.conf.d
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  # RPM: %dir %attr(750, mysql, mysql) /var/lib/mysql-files (the compiled-in secure-file-priv), /var/lib/mysql-keyring;
+  # %attr(755, mysql, mysql) /var/run/mysqld (/var/run -> /run on Wolfi), /etc/mysql/certs
+  - path: /var/lib/mysql-files
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o750
+  - path: /var/lib/mysql-keyring
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o750
+  - path: /run/mysqld
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/mysql/certs
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  # Dockerfile: mkdir -p /usr/local/percona; chown mysql:mysql; chown mysql /usr/bin/telemetry-agent-supervisor.sh
+  # /usr/bin/percona-telemetry-agent /usr/local/percona/telemetry/history; chown -R mysql /var/log/percona
+  - path: /usr/local/percona
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /usr/local/percona/telemetry
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /usr/local/percona/telemetry/history
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /usr/bin/percona-telemetry-agent
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o755
+  - path: /usr/bin/telemetry-agent-supervisor.sh
+    type: permissions
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+  - path: /var/log/percona
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+
+entrypoint:
+  command: /entrypoint.sh
+cmd: mysqld
+work-dir: /
+
+# Dockerfile ENV; version values are ours (Wolfi build of @@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@).
+# PXC_REPO describes the rpm repository of the build and is not set. PERCONA_TELEMETRY_DISABLE is a build ARG, not an
+# ENV: unset at runtime (telemetry on), as in the official image.
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+  PXC_VERSION: "@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@"
+  OS_VER: wolfi
+  FULL_PERCONA_VERSION: "@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@.wolfi"
+  PXC_TELEMETRY_VERSION: "@@pxc_version@@-@@pxc_release@@-@@pxc_rpm_release@@"
+  CALL_HOME_OPTIONAL_PARAMS: " -s wolfi"
+  PERCONA_TELEMETRY_CHECK_INTERVAL: "86400"
+  PERCONA_TELEMETRY_HISTORY_KEEP_INTERVAL: "604800"
+  PERCONA_TELEMETRY_RESEND_INTERVAL: "60"
+  PERCONA_TELEMETRY_URL: https://check.percona.com/v1/telemetry/GenericReport
+
+annotations:
+  org.opencontainers.image.title: percona-xtradb-cluster
+  org.opencontainers.image.description: Percona XtraDB Cluster @@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@ (Galera @@galera_version@@) built from source on Wolfi (drop-in for percona/percona-xtradb-cluster:9.7). Not an official Percona image.
+  org.opencontainers.image.version: "@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64

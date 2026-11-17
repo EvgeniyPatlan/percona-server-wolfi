@@ -1,0 +1,184 @@
+package:
+  name: percona-xtradb-cluster-docker-scripts
+  version: "@@pxc_version@@.@@pxc_release@@.@@pxc_rpm_release@@"
+  epoch: 0
+  description: Entrypoint and docker glue of the official percona/percona-xtradb-cluster 9.x image (percona-docker at a pinned commit, Wolfi-patched)
+  copyright:
+    - license: GPL-2.0-only
+  # /usr/bin/telemetry-agent-supervisor.sh is also in percona-telemetry-agent (the percona-server variant, which
+  # reports PRODUCT_FAMILY_PS); this package ships the PXC one from percona-xtradb-cluster-9.x/ and wins in the image.
+  dependencies:
+    replaces:
+      - percona-telemetry-agent
+    runtime:
+      - bash
+      - busybox
+      - tcmalloc
+      - percona-xtradb-cluster-docker-config=${{package.full-version}}
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+      - patch
+
+pipeline:
+  # percona-docker has no release tags; fetch the pinned commit by hash and verify it
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # Wolfi-only tweaks (hostname -i, pwmake); each patch header says why. See docs/deviations.md.
+  - name: Apply Wolfi patches
+    runs: |
+      set -eu
+      export LC_ALL=C
+      for p in patches/*.patch; do
+        echo "applying $p"
+        patch -d pd-src -p1 --forward < "$p"
+      done
+      if grep -rn 'hostname -I' pd-src/percona-xtradb-cluster-9.x/dockerdir; then exit 1; fi
+
+  # percona-xtradb-cluster-9.x/Dockerfile: COPY dockerdir /, COPY telemetry-agent-supervisor.sh /usr/bin/, the
+  # my.cnf rewrite and the directories it creates (owned by mysql = 1001, chmod -R g=u).
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      src=pd-src/percona-xtradb-cluster-9.x/dockerdir
+      # dockerdir/usr/sbin and usr/lib64 are symlinks to usr/bin and usr/lib on Wolfi: files go to the real
+      # directories (mysqld reads mysqld.my next to the real executable, component_*.cnf in the real plugin dir)
+      (cd "$src" && find . -type f) | LC_ALL=C sort | while read -r f; do
+        f=${f#./}
+        case $f in
+          usr/sbin/*) t=usr/bin/${f#usr/sbin/} ;;
+          usr/lib64/*) t=usr/lib/${f#usr/lib64/} ;;
+          *) t=$f ;;
+        esac
+        m=0644
+        case $f in *.sh | usr/bin/* | usr/local/bin/*) m=0755 ;; esac
+        install -Dm"$m" "$src/$f" "$d/$t"
+      done
+      test -x "$d/entrypoint.sh"
+      test -x "$d/unsafe-bootstrap.sh"
+      install -Dm0775 pd-src/percona-xtradb-cluster-9.x/telemetry-agent-supervisor.sh "$d/usr/bin/telemetry-agent-supervisor.sh"
+      install -Dm0644 pd-src/percona-xtradb-cluster-9.x/LICENSE "$d/licenses/LICENSE.Dockerfile"
+      # Dockerfile: gperftools (tcmalloc) built with `make install` into /usr, which leaves /usr/lib/libtcmalloc.so;
+      # the PXC operator preloads /usr/lib64/libtcmalloc.so (spec.pxc.mysqlAllocator: tcmalloc). Wolfi's tcmalloc
+      # ships only the versioned library, so the unversioned name points at it.
+      install -d "$d/usr/lib"
+      ln -s libtcmalloc.so.4 "$d/usr/lib/libtcmalloc.so"
+      # Dockerfile: rmdir /etc/my.cnf.d; ln -s /etc/mysql/conf.d /etc/my.cnf.d; then /etc/my.cnf is
+      #   !include /etc/mysql/node.cnf / !includedir /etc/my.cnf.d/ / !includedir /etc/percona-xtradb-cluster.conf.d/
+      printf '%s\n' '!include /etc/mysql/node.cnf' '!includedir /etc/my.cnf.d/' \
+        '!includedir /etc/percona-xtradb-cluster.conf.d/' > "$d/etc/my.cnf"
+      ln -s /etc/mysql/conf.d "$d/etc/my.cnf.d"
+      # Dockerfile: mkdir -p /etc/mysql/conf.d/ /var/log/mysql /var/lib/mysql /docker-entrypoint-initdb.d
+      # /etc/percona-xtradb-cluster.conf.d; chown -R 1001:1001 (those and /etc/mysql); chmod -R g=u
+      install -d -m0775 "$d/etc/mysql/conf.d" "$d/etc/percona-xtradb-cluster.conf.d" "$d/docker-entrypoint-initdb.d"
+      chmod 0775 "$d/etc/mysql"
+      chmod 0664 "$d/etc/mysql/node.cnf"
+      chown -R 1001:1001 "$d/etc/mysql" "$d/etc/percona-xtradb-cluster.conf.d" "$d/docker-entrypoint-initdb.d"
+      # /var/lib/mysql and /var/log/mysql are created by the image (apko paths), not packaged
+      test "$(stat -c '%u:%g %a' "$d/etc/mysql/node.cnf")" = "1001:1001 664"
+      grep -qx 'wsrep_provider=/usr/lib64/galera4/libgalera_smm.so' "$d/etc/mysql/node.cnf"
+
+subpackages:
+  # /etc/my.cnf, /etc/my.cnf.d (symlink) and /etc/mysql of the official image. /etc/my.cnf is also in
+  # percona-xtradb-cluster-server (the RPM file, unedited); `replaces` lets this one win in the image.
+  - name: percona-xtradb-cluster-docker-config
+    description: /etc/my.cnf, /etc/my.cnf.d and /etc/mysql/node.cnf as in the official percona/percona-xtradb-cluster 9.x image
+    dependencies:
+      replaces:
+        - percona-xtradb-cluster-server
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/etc"
+          mv "$d/etc/my.cnf" "$d/etc/my.cnf.d" "$d/etc/mysql" "$d/etc/percona-xtradb-cluster.conf.d" "$s/etc/"
+          test -L "$s/etc/my.cnf.d"
+          test "$(stat -c '%u:%g' "$s/etc/mysql/conf.d")" = 1001:1001
+
+  # percona-xtradb-cluster-9.x-backup/Dockerfile: COPY lib/pxc /usr/lib/pxc; COPY recovery-*.sh run_backup.sh backup.sh
+  # get-pxc-state /usr/bin/; install -d -o 1001 -g 0 -m 0775 /backup. Unpatched: the scripts run as they are on Wolfi
+  # (bash, procps `ps -C`, busybox `hostname -i`). /usr/bin/get-pxc-state differs from the server image's script of the
+  # same name (it reads the xtrabackup user); the two packages never go into the same image.
+  - name: percona-xtradb-cluster-backup-scripts
+    description: Backup and restore scripts of the PXC operator backup image (percona-docker percona-xtradb-cluster-9.x-backup)
+    dependencies:
+      runtime:
+        - bash
+        - busybox
+        - procps
+    pipeline:
+      - runs: |
+          s="${{targets.subpkgdir}}"
+          b=pd-src/percona-xtradb-cluster-9.x-backup
+          for f in "$b"/lib/pxc/*.sh; do install -Dm0755 "$f" "$s/usr/lib/pxc/${f##*/}"; done
+          for f in "$b"/recovery-*.sh "$b"/run_backup.sh "$b"/backup.sh "$b"/get-pxc-state; do
+            install -Dm0755 "$f" "$s/usr/bin/${f##*/}"
+          done
+          install -Dm0644 "$b/LICENSE" "$s/licenses/LICENSE.Dockerfile"
+          install -d -m0775 "$s/backup"
+          chown 1001:0 "$s/backup"
+          for f in backup.sh run_backup.sh recovery-cloud.sh recovery-pvc-donor.sh recovery-pvc-joiner.sh get-pxc-state; do
+            test -x "$s/usr/bin/$f"
+          done
+          test -f "$s/usr/lib/pxc/backup.sh"
+          test "$(stat -c '%u:%g %a' "$s/backup")" = "1001:0 775"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - procps
+        - percona-xtradb-cluster-docker-scripts
+  pipeline:
+    - name: entrypoint and scripts
+      runs: |
+        for f in /entrypoint.sh /unsafe-bootstrap.sh /usr/bin/configure-pxc.sh /usr/bin/get-pxc-state \
+          /usr/bin/clustercheckcron /usr/bin/telemetry-agent-supervisor.sh; do
+          bash -n "$f"
+          test -x "$f"
+        done
+        head -n1 /entrypoint.sh | grep -x '#!/bin/bash'
+        # Wolfi patches applied
+        if grep -E 'pwmake|hostname -I' /entrypoint.sh /usr/bin/configure-pxc.sh /usr/bin/clustercheckcron; then exit 1; fi
+        grep -q 'hostname -i' /entrypoint.sh
+        grep -q PRODUCT_FAMILY_PXC /usr/bin/telemetry-agent-supervisor.sh
+        p=$(od -An -N24 -tx1 /dev/urandom | tr -d " \n")
+        test "${#p}" = 48
+    - name: config files
+      runs: |
+        test "$(head -n1 /etc/my.cnf)" = '!include /etc/mysql/node.cnf'
+        grep -qx '!includedir /etc/percona-xtradb-cluster.conf.d/' /etc/my.cnf
+        test "$(readlink /etc/my.cnf.d)" = /etc/mysql/conf.d
+        test -d /etc/mysql/conf.d
+        grep -qx 'wsrep_sst_method=xtrabackup-v2' /etc/mysql/node.cnf
+        grep -q read_local_manifest /usr/bin/mysqld.my
+        grep -q read_local_config /usr/lib/mysql/plugin/component_keyring_vault.cnf
+        test -d /docker-entrypoint-initdb.d
+        # the operator's tcmalloc preload path resolves (Wolfi's merged /usr/lib64 -> lib)
+        test -e /usr/lib64/libtcmalloc.so
+
+update:
+  enabled: false

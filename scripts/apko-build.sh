@@ -9,7 +9,8 @@
 #      out/results/<name>.digest (compare runs with `scripts/verify-repro.sh images`).
 # Tags: percona-server:<series>, :<ps_version>-<ps_release> (+ -<BUILD_ID> when set); the -dev image is the same
 # repository with a -dev suffix; percona-xtrabackup:<series>, :<pxb_version>-<pxb_release>;
-# percona-mysql-router:<series>, :<ps_version>-<ps_release> (the router is built from the server tree).
+# percona-mysql-router:<series>, :<ps_version>-<ps_release> (the router is built from the server tree);
+# percona-xtradb-cluster and percona-xtradb-cluster-backup:<series>, :<pxc_version>-<pxc_release>.<pxc_rpm_release>.
 # Reproducible inputs: build date from source_date_epoch, VCS autodetection off, the revision annotation is the last
 # commit that touched the build inputs or images/*.tmpl (<sha>-dirty when those have uncommitted changes; RELEASE=1
 # refuses that unless ALLOW_DIRTY=1).
@@ -21,7 +22,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/keys.sh"
 cd "$here/.."
 
-usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router> [--no-publish]"; }
+usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-xtradb-cluster|percona-xtradb-cluster-backup> [--no-publish]"; }
 (($#)) || usage
 name=$1
 shift
@@ -38,11 +39,15 @@ version_file=${VERSION_FILE:-versions/9.7.yaml}
 v() { vars_get "$version_file" "$1"; }
 ps_full=$(v ps_version)-$(v ps_release)
 series=$(v ps_version | cut -d. -f1-2)
+pxc_full=$(v pxc_version)-$(v pxc_release).$(v pxc_rpm_release)
 # forbid: packages that must not end up in the image (regex on package names, checked against the lock file
 # before building). distroless=1: after the build the image's file list must not contain a shell or apk either.
 # Rules: no shell/apk and no perl/python in the distroless image; mysqlsh (+ the -jit blob, ruling R4) and the telemetry agent only in
 # -dev (and mysqlsh, by owner ruling, in the router image); percona-xtrabackup-docker-scripts and percona-telemetry-agent
 # never together (both ship /call-home.sh). The router image has no telemetry agent and no other image's scripts.
+# PXC images: no Percona Server server/library packages (the PXC ones ship the same files), no mysqlsh, no other
+# image's scripts; the backup image has no PXC server and no telemetry agent.
+ps_pkgs='percona-server-(server|libs|client|icu-data-files|dev|scripts|test|rocksdb|js|docker-config)'
 shells='busybox[a-z0-9-]*|bash|dash|toybox|mksh|zsh|oksh|[a-z0-9-]*-binsh|apk-tools[a-z0-9-]*'
 dev_only='percona-mysql-shell[a-z0-9-]*|percona-telemetry-agent'
 # distroless only: no script interpreters either. percona-server-scripts (mysqld_safe, ps-admin, ...) and Wolfi's
@@ -56,6 +61,10 @@ case $name in
   percona-xtrabackup) repo_name=percona-xtrabackup suffix='' full=$(v pxb_version)-$(v pxb_release) forbid=$dev_only ;;
   percona-mysql-router) repo_name=percona-mysql-router suffix='' full=$ps_full
     forbid='percona-telemetry-agent|percona-server-docker-scripts|percona-xtrabackup-docker-scripts|percona-server-server' ;;
+  percona-xtradb-cluster) repo_name=percona-xtradb-cluster suffix='' full=$pxc_full
+    forbid="percona-mysql-shell[a-z0-9-]*|$ps_pkgs|percona-xtradb-cluster-backup-scripts|percona-server-docker-scripts|percona-xtrabackup-docker-scripts" ;;
+  percona-xtradb-cluster-backup) repo_name=percona-xtradb-cluster-backup suffix='' full=$pxc_full
+    forbid="$dev_only|$ps_pkgs|percona-xtradb-cluster-server|percona-xtradb-cluster-docker-[a-z]*|percona-server-docker-scripts|percona-xtrabackup-docker-scripts" ;;
   *) die "unknown image: $name" ;;
 esac
 
