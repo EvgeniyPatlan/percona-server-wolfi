@@ -1,0 +1,165 @@
+package:
+  name: percona-orchestrator
+  # apk-legal form of @@orc_version@@-@@orc_release@@ (same convention as percona-server)
+  version: "@@orc_version@@.@@orc_release@@"
+  epoch: 0
+  description: Percona Orchestrator @@orc_version@@-@@orc_release@@, MySQL replication topology management and HA (percona/orchestrator @@orc_tag@@)
+  copyright:
+    - license: Apache-2.0
+  dependencies:
+    runtime:
+      # percona-orchestrator.spec: Requires jq >= 1.5, oniguruma (jq's regex library, a dependency of Wolfi's jq)
+      - jq
+
+# Mirrors the percona-orchestrator rpm (percona/orchestrator-packaging percona-orchestrator.spec, built by
+# orchestrator_builder.sh): /usr/local/orchestrator/{orchestrator,resources,orchestrator-sample*.conf.json} and
+# the LICENSE as %doc; subpackage percona-orchestrator-client (/usr/bin/orchestrator-client).
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - git
+      # go.mod says `go 1.26.5`; GOTOOLCHAIN=local below keeps the toolchain from being downloaded
+      - go-@@orc_go@@
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/orchestrator
+      tag: "@@orc_tag@@"
+      expected-commit: "@@orc_commit@@"
+      destination: orc-src
+
+  # Upstream's script/build, as orchestrator_builder.sh rewrites it for the rpm: AppVersion = <version>-<release>,
+  # GitCommit = the full commit; `go build ./go/cmd/orchestrator/main.go` with cgo (mattn/go-sqlite3, the SQLite
+  # backend). The repository vendors its modules (vendor/modules.txt), so the build is offline (-mod=vendor;
+  # the builder's `go mod vendor` only refreshes that tree). Reproducibility: -trimpath, -buildvcs=false.
+  # -s -w strips symbol tables (the rpm's brp-strip does the same). melange's go/build pipeline is not used: it
+  # forces GOAMD64=v2, which upstream does not.
+  - name: Build orchestrator
+    runs: |
+      set -eu
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      export CGO_ENABLED=1 GOTOOLCHAIN=local GOFLAGS=-mod=vendor
+      export GOMODCACHE=/var/cache/melange/gomodcache
+      # mattn/go-sqlite3 compiles the SQLite amalgamation; same hardening baseline as the C/C++ recipes
+      export CGO_CFLAGS="-O2 @@hardening_cflags@@"
+      export CGO_LDFLAGS="@@hardening_ldflags@@"
+      cd orc-src
+      test "$(cat RELEASE_VERSION)" = "@@orc_version@@"
+      go build -trimpath -buildvcs=false \
+        -ldflags "-s -w -X main.AppVersion=@@orc_version@@-@@orc_release@@ -X main.GitCommit=@@orc_commit@@" \
+        -o bin/orchestrator ./go/cmd/orchestrator/main.go
+
+  # %install of percona-orchestrator.spec: resources/ without resources/bin, the binary, the sample configs.
+  # No systemd unit (/lib/systemd/system/orchestrator.service): containers have no init system.
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      cd orc-src
+      install -d -m0755 "$d/usr/local/orchestrator"
+      cp -r resources "$d/usr/local/orchestrator/resources"
+      rm -rf "$d/usr/local/orchestrator/resources/bin"
+      install -m0755 bin/orchestrator "$d/usr/local/orchestrator/orchestrator"
+      install -m0644 conf/orchestrator-sample.conf.json conf/orchestrator-sample-sqlite.conf.json \
+        "$d/usr/local/orchestrator/"
+      install -Dm0644 LICENSE "$d/usr/share/doc/percona-orchestrator/LICENSE"
+      install -Dm0644 LICENSE "$d/usr/share/licenses/percona-orchestrator/LICENSE"
+      # git-checkout leaves the files with the checkout time; give the tree a fixed mode set
+      find "$d/usr/local/orchestrator/resources" -type d -exec chmod 0755 {} +
+      find "$d/usr/local/orchestrator/resources" -type f -exec chmod 0644 {} +
+
+  - name: Build-path leak scan
+    runs: |
+      bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)"
+
+subpackages:
+  # percona-orchestrator-client: the API client shell script (spec: Requires jq >= 1.5, curl)
+  - name: percona-orchestrator-client
+    description: orchestrator-client, the command line client script for the Orchestrator HTTP API
+    dependencies:
+      runtime:
+        - bash
+        - busybox
+        - curl
+        - jq
+    pipeline:
+      - runs: |
+          set -eu
+          install -Dm0755 orc-src/resources/bin/orchestrator-client "${{targets.subpkgdir}}/usr/bin/orchestrator-client"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - curl
+        - percona-orchestrator
+        - percona-orchestrator-client
+  pipeline:
+    - name: version
+      runs: |
+        /usr/local/orchestrator/orchestrator --version > v
+        cat v
+        test "$(sed -n 1p v)" = "@@orc_version@@-@@orc_release@@"
+        test "$(sed -n 2p v)" = "@@orc_commit@@"
+    - name: layout
+      runs: |
+        test -d /usr/local/orchestrator/resources/public
+        test -d /usr/local/orchestrator/resources/templates
+        test ! -e /usr/local/orchestrator/resources/bin
+        test -f /usr/local/orchestrator/orchestrator-sample-sqlite.conf.json
+        test -f /usr/share/doc/percona-orchestrator/LICENSE
+    - name: client script
+      runs: |
+        test -x /usr/bin/orchestrator-client
+        bash -n /usr/bin/orchestrator-client
+        # without -c the client refuses to run (getopts has no long --help)
+        if orchestrator-client > out 2>&1; then exit 1; fi
+        grep -q 'No command given' out
+        # no server: the client fails instead of hanging
+        if ORCHESTRATOR_API=http://127.0.0.1:1/api orchestrator-client -c clusters > out 2>&1; then exit 1; fi
+    - name: http with the SQLite backend
+      runs: |
+        set -eu
+        mkdir -p /tmp/orc
+        cat > /tmp/orc/orc.conf.json <<'EOF'
+        {
+          "Debug": false,
+          "ListenAddress": "127.0.0.1:3000",
+          "BackendDB": "sqlite",
+          "SQLite3DataFile": "/tmp/orc/orc.db",
+          "MySQLTopologyUser": "orc",
+          "MySQLTopologyPassword": "orc"
+        }
+        EOF
+        cd /usr/local/orchestrator
+        ./orchestrator -config /tmp/orc/orc.conf.json http > /tmp/orc/log 2>&1 &
+        pid=$!
+        ok=0
+        for _ in $(seq 1 60); do
+          if curl -sf http://127.0.0.1:3000/api/health > /tmp/orc/health; then ok=1; break; fi
+          sleep 1
+        done
+        cat /tmp/orc/health || true
+        kill "$pid" || true
+        if [ $ok != 1 ]; then tail -n 40 /tmp/orc/log; exit 1; fi
+        grep -q '"Code":"OK"' /tmp/orc/health
+        test -s /tmp/orc/orc.db
+
+update:
+  enabled: false

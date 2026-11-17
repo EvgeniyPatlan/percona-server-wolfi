@@ -9,7 +9,7 @@ reference sections below it explain each component, what to send back when it fa
     make tools-pull keys          # once: pull pinned tool images, generate signing keys (then commit the public keys)
     make phase-a                  # sources vendor-v8 packages repro-all verify-repro
     make phase-b                  # registry-up images repro-images test-image test-compat test-upgrade test-mysqlsh
-                                  #   test-xtrabackup test-router test-haproxy test-fluentbit scan sign verify-sign
+                                  #   test-xtrabackup test-router test-haproxy test-fluentbit test-orchestrator scan sign verify-sign
     make all                      # phase-a phase-b, then report (always, even after a failure)
     make mtr-nightly              # not part of `all`: upstream MTR suites, run separately (hours)
     scripts/build.sh              # incremental: only out-of-date packages/images (-n: plan only); not for releases
@@ -106,7 +106,7 @@ Needs phase A's `out/repo` and committed build inputs (images record the last co
 versions mk Makefile images/*.tmpl` as their revision; committing the lock files or docs does not change it). It runs `registry-up` (local registry
 on 127.0.0.1:5000), `images` (percona-server, percona-server-dev, percona-xtrabackup, percona-mysql-router; creates `images/*.lock.json` on
 the first run), `repro-images` (a second, independent build of each image from the same lock files, digests must
-match: see "Images"), `test-image`, `test-compat`, `test-upgrade`, `test-mysqlsh`, `test-xtrabackup`, `test-router`, `scan`, `sign` and
+match: see "Images"), `test-image`, `test-compat`, `test-upgrade`, `test-mysqlsh`, `test-xtrabackup`, `test-router`, `test-orchestrator`, `scan`, `sign` and
 `verify-sign`. apko publishes the images to the registry only (nothing is loaded into the local docker), so every image
 test suite starts with `docker pull` of the refs it tests (`setup_file`); a failed pull fails the whole suite (never a
 skip). `scripts/run-bats.sh` also fails a suite in which every test was skipped, so a wrong `IMAGE` cannot pass
@@ -152,7 +152,7 @@ or a missing apk in `MTR_EXTRA_PKGS`. Send back `make mtr-nightly report`.
 | `repro-build-*` | the second build failed (same causes as `pkg-*`) |
 | `verify-repro-*` | `DIFF` lines: diffoscope HTML in `out/results/diffoscope-<apk>.html`; fix the non-determinism, rebuild the reference too |
 | `image-*` / `images-*` | apko failed: a missing package in `out/repo`, a stale lock (`make images-lock`), a distroless violation message, or key mismatch |
-| `test-image-*`, `test-upgrade-*`, `test-mysqlsh-*`, `test-xtrabackup-*`, `test-router-*` | bats output with `not ok` and the failing step; leftovers: `docker ps -a --filter name=psw-` |
+| `test-image-*`, `test-upgrade-*`, `test-mysqlsh-*`, `test-xtrabackup-*`, `test-router-*`, `test-orchestrator-*` | bats output with `not ok` and the failing step; leftovers: `docker ps -a --filter name=psw-` |
 | `test-compat-*` and `out/results/compat-*.diff` | a runtime difference from the official image; owner decides on an allowlist entry |
 | `scan-*`, `out/results/cve-*` | a Critical/High finding not covered by VEX (triage order in the supply-chain section) |
 | `sign-*` / `verify-sign-*` | key or registry problem; signing refuses if the committed `keys/cosign.pub` differs from the key dir |
@@ -486,7 +486,7 @@ config, so after any change to a template or to `versions/9.7.yaml` values it us
 too: a reproducible rebuild keeps the lock valid, a changed apk needs a relock.
 
 Reproducibility: `make repro-images` (in `phase-b` right after `images`, before the tests, scanning and signing) runs
-`scripts/repro-images.sh`: a second build of all four from the lock files the first build used (`RELOCK` cleared; a lock
+`scripts/repro-images.sh`: a second build of all seven from the lock files the first build used (`RELOCK` cleared; a lock
 file that changes fails), with a fresh apko cache and separate output dirs (`out/repro-images/`), published to
 `localhost:5000/repro/...` so the first build's tags, digests and SBOMs stay untouched, then compares each index digest
 with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line must be `OK`. Build date =
@@ -494,7 +494,7 @@ with `out/results/<name>.digest` (`scripts/verify-repro.sh images`); every line 
 
 Host checks (record in the task report):
 
-1. `make repro-images`: four `OK` lines.
+1. `make repro-images`: seven `OK` lines.
 2. Distroless: `apko-build.sh percona-server` did not stop with "must not contain" (a runtime dependency pulling in a
    shell, mysqlsh or the agent) or "is distroless but the image contains" (a shell/apk file in the image). If it did,
    send the lock file's package list and the message.
@@ -638,6 +638,29 @@ YAML config in the PS operator's style, the entrypoint tailing a new error-log l
 Both suites pass against the official images too, except for the version checks (`HAPROXY_IMAGE=` /
 `FLUENTBIT_IMAGE=` set to `official_haproxy_image` / `official_fluentbit_image`, `PS_PULL=0` after a `docker pull`).
 
+## Orchestrator (`percona-orchestrator`, `make test-orchestrator`)
+
+`percona-orchestrator` builds `percona/orchestrator` at `orc_tag` (Go `go-<orc_go>`, offline from the committed vendor
+tree, cgo for go-sqlite3) into the rpm layout: `/usr/local/orchestrator/{orchestrator,resources,orchestrator-sample*.conf.json}`
+and the subpackage `percona-orchestrator-client`. Its `melange test` checks `--version` (`<orc_version>-<orc_release>`
+and `orc_commit`), the layout, `orchestrator-client`, and starts `orchestrator http` with a SQLite backend until
+`/api/health` answers. `percona-orchestrator-docker-scripts` (built against it, for `/licenses/LICENSE.orchestrator`)
+ships percona-docker `orchestrator/dockerdir` at `percona_docker_commit` with the entrypoint run by bash (one patch).
+Neither needs the server packages: `scripts/build.sh percona-orchestrator` builds only these two.
+
+    make test-orchestrator IMAGE=localhost:5000/percona-server:9.7-dev ORC_IMAGE=localhost:5000/percona-orchestrator:3.2.6 report
+
+`tests/image/orchestrator.bats` (4 tests, about 3 minutes, docker only): version, layout, uid 1001 and the tools the
+entrypoints call (`jq`, `curl`, `orchestrator-client`, ...); the default command with the shipped configuration
+(SQLite in `/var/lib/orchestrator`, single-node raft leader, `/api/health`, `/api/status`, `/api/leader-check`,
+`orchestrator-client -c clusters`, the topology password written by the entrypoint); the entrypoint's Kubernetes branch
+(namespace and password read from files, raft/TLS settings merged with jq); and discovery of a GTID source/replica
+pair of the -dev image (`which-replicas`, `which-master`, `clusters`). The pair gets the operator's
+`sys_operator.heartbeat` table (the shipped `ReplicationLagQuery` reads it; without it no instance can be read), both
+nodes are discovered by name as the operator's `orc-add_mysql_nodes.sh` does, and one TLS login per server fills the
+`caching_sha2_password` cache so orchestrator's plain connection is accepted. This flow was checked by hand with the
+built binary and entrypoint mounted into the official image; the suite itself has not run against our image yet.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime
@@ -689,7 +712,7 @@ Triage of a Critical/High finding (the order matters):
 
 1. Fixable by bumping the component or unbundling it (V8, protobuf, ICU, libevent, editline, fido): change the recipe
    flag or version, add a row to `docs/deviations.md`, rebuild the packages and images, and re-run the image tests
-   (`make test-image test-upgrade test-mysqlsh test-xtrabackup test-router`), then scan again.
+   (`make test-image test-upgrade test-mysqlsh test-xtrabackup test-router test-orchestrator`), then scan again.
 2. Genuinely not applicable (the vulnerable code is not reachable or not shipped): write an OpenVEX statement
    (`status: not_affected` with a `justification`) in `vex/<image>.openvex.json` as a draft, and **get the project
    owner's approval before committing it**. VEX is never used to silence a fixable finding. Keep the fixed
@@ -725,10 +748,10 @@ Before and during phase A:
 Phase B:
 
 - [ ] `make phase-b`; then **commit `images/*.lock.json`** created by the first `make images` (Images). Its
-  `repro-images` step printed four `OK` lines.
+  `repro-images` step printed seven `OK` lines.
 - [ ] Hard pass/fail from the Images section: the edited `/etc/my.cnf` wins over the RPM copy (both commands print
   `PASS`); distroless build did not stop with a "must not contain" message.
-- [ ] `make test-image test-upgrade test-mysqlsh test-xtrabackup test-router` green; no `ALL-SKIPPED` line; skipped upgrade cases (server refuses the jump)
+- [ ] `make test-image test-upgrade test-mysqlsh test-xtrabackup test-router test-orchestrator` green; no `ALL-SKIPPED` line; skipped upgrade cases (server refuses the jump)
   reviewed.
 - [ ] `make test-compat` PASS. **Owner approval required** for every `tests/compat/allowlist.yaml` entry (including
   uncommenting the "candidates for owner approval" block).

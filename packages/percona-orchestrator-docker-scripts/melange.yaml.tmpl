@@ -1,0 +1,114 @@
+package:
+  name: percona-orchestrator-docker-scripts
+  version: "@@orc_version@@.@@orc_release@@"
+  epoch: 0
+  description: Entrypoint, configuration and helper script of the official percona/percona-orchestrator image (percona-docker orchestrator/dockerdir at a pinned commit, Wolfi-patched)
+  copyright:
+    # percona-docker orchestrator/LICENSE (installed as /licenses/LICENSE.Dockerfile) is Apache-2.0
+    - license: Apache-2.0
+  dependencies:
+    runtime:
+      # entrypoint.sh: bash (after the patch), jq, mktemp/sed (busybox); add_mysql_nodes.sh: curl, jq
+      - bash
+      - busybox
+      - curl
+      - jq
+      - percona-orchestrator
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - busybox
+      - bash
+      - git
+      - patch
+      # Dockerfile: cp /usr/share/doc/percona-orchestrator/LICENSE /licenses/LICENSE.orchestrator
+      - percona-orchestrator
+
+pipeline:
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  # Wolfi-only tweak (entrypoint.sh runs with bash); the patch header says why. See docs/deviations.md.
+  - name: Apply Wolfi patches to entrypoint.sh
+    runs: |
+      set -eu
+      export LC_ALL=C
+      cp pd-src/orchestrator/dockerdir/entrypoint.sh entrypoint.sh
+      for p in patches/*.patch; do
+        echo "applying $p"
+        patch -d . -p1 --forward < "$p"
+      done
+
+  # orchestrator/Dockerfile: COPY dockerdir / (entrypoint.sh, etc/orchestrator/{orchestrator.conf.json,
+  # orc-topology.cnf}, usr/bin/add_mysql_nodes.sh), COPY LICENSE /licenses/LICENSE.Dockerfile, the rpm LICENSE as
+  # /licenses/LICENSE.orchestrator, chown 1001:1001 of the two configuration files. /etc/orchestrator itself stays
+  # root:root 0755 (COPY dockerdir / replaces the chowned directory, as the official image shows).
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      dd=pd-src/orchestrator/dockerdir
+      # nothing in dockerdir is left out
+      test "$(cd "$dd" && find . -type f | LC_ALL=C sort | tr '\n' ' ')" = \
+        "./entrypoint.sh ./etc/orchestrator/orc-topology.cnf ./etc/orchestrator/orchestrator.conf.json ./usr/bin/add_mysql_nodes.sh "
+      install -Dm0755 entrypoint.sh "$d/entrypoint.sh"
+      install -Dm0755 "$dd/usr/bin/add_mysql_nodes.sh" "$d/usr/bin/add_mysql_nodes.sh"
+      install -d -m0755 "$d/etc/orchestrator"
+      install -m0644 "$dd/etc/orchestrator/orchestrator.conf.json" "$dd/etc/orchestrator/orc-topology.cnf" "$d/etc/orchestrator/"
+      chown 1001:1001 "$d/etc/orchestrator/orchestrator.conf.json" "$d/etc/orchestrator/orc-topology.cnf"
+      install -Dm0644 pd-src/orchestrator/LICENSE "$d/licenses/LICENSE.Dockerfile"
+      install -Dm0644 /usr/share/doc/percona-orchestrator/LICENSE "$d/licenses/LICENSE.orchestrator"
+      # `melange test` installs without applying owners, so ownership is asserted here, on the tree that becomes
+      # the apk (see the telemetry agent recipe for the mechanism).
+      for f in etc/orchestrator/orchestrator.conf.json etc/orchestrator/orc-topology.cnf; do
+        test "$(stat -c '%u:%g %a' "$d/$f")" = "1001:1001 644"
+      done
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - jq
+        - percona-orchestrator-docker-scripts
+  pipeline:
+    - name: scripts and configuration
+      runs: |
+        bash -n /entrypoint.sh
+        bash -n /usr/bin/add_mysql_nodes.sh
+        test -x /entrypoint.sh
+        test -x /usr/bin/add_mysql_nodes.sh
+        head -n1 /entrypoint.sh | grep -x '#!/bin/bash'
+        jq -e '.BackendDB == "sqlite" and .ListenAddress == ":3000" and .SQLite3DataFile == "/var/lib/orchestrator/orc.db"' \
+          /etc/orchestrator/orchestrator.conf.json
+        grep -qx 'user=orchestrator' /etc/orchestrator/orc-topology.cnf
+        test -s /licenses/LICENSE.Dockerfile
+        test -s /licenses/LICENSE.orchestrator
+    - name: entrypoint writes the topology password and execs the command
+      runs: |
+        set -eu
+        cp /etc/orchestrator/orc-topology.cnf /tmp/orc-topology.cnf.orig
+        ORC_TOPOLOGY_PASSWORD=s3cret /entrypoint.sh true
+        grep -qx 'password=s3cret' /etc/orchestrator/orc-topology.cnf
+        cp /tmp/orc-topology.cnf.orig /etc/orchestrator/orc-topology.cnf
+
+update:
+  enabled: false

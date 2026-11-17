@@ -10,7 +10,8 @@
 # Tags: percona-server:<series>, :<ps_version>-<ps_release> (+ -<BUILD_ID> when set); the -dev image is the same
 # repository with a -dev suffix; percona-xtrabackup:<series>, :<pxb_version>-<pxb_release>;
 # percona-mysql-router:<series>, :<ps_version>-<ps_release> (the router is built from the server tree);
-# percona-haproxy:<haproxy_series>, :<haproxy_version>; percona-fluentbit:<fluentbit_series>, :<fluentbit_version>.
+# percona-haproxy:<haproxy_series>, :<haproxy_version>; percona-fluentbit:<fluentbit_series>, :<fluentbit_version>;
+# percona-orchestrator:<orc_version>, :<orc_version>-<orc_release>.
 # Reproducible inputs: build date from source_date_epoch, VCS autodetection off, the revision annotation is the last
 # commit that touched the build inputs or images/*.tmpl (<sha>-dirty when those have uncommitted changes; RELEASE=1
 # refuses that unless ALLOW_DIRTY=1).
@@ -22,7 +23,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/keys.sh"
 cd "$here/.."
 
-usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit> [--no-publish]"; }
+usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator> [--no-publish]"; }
 (($#)) || usage
 name=$1
 shift
@@ -46,6 +47,7 @@ series=$(v ps_version | cut -d. -f1-2)
 # never together (both ship /call-home.sh). The router image has no telemetry agent and no other image's scripts.
 # The haproxy and fluentbit images: no server, no mysqlsh, no telemetry agent, no other image's scripts; the haproxy
 # image takes the -nocaps haproxy only (the default build has a file capability, see its template).
+# The orchestrator image has no server, mysqlsh, telemetry agent or other image's scripts.
 shells='busybox[a-z0-9-]*|bash|dash|toybox|mksh|zsh|oksh|[a-z0-9-]*-binsh|apk-tools[a-z0-9-]*'
 dev_only='percona-mysql-shell[a-z0-9-]*|percona-telemetry-agent'
 # distroless only: no script interpreters either. percona-server-scripts (mysqld_safe, ps-admin, ...) and Wolfi's
@@ -54,7 +56,7 @@ interpreters='perl[a-z0-9-]*|python[a-z0-9.-]*|percona-server-scripts|jemalloc'
 # others_scripts <x>: every docker-scripts package except percona-<x>-docker-scripts, as a regex alternation
 others_scripts() {
   local p out=
-  for p in server xtrabackup mysql-router haproxy fluentbit; do
+  for p in server xtrabackup mysql-router haproxy fluentbit orchestrator; do
     [[ $p == "$1" ]] || out+="${out:+|}percona-$p-docker-scripts"
   done
   printf '%s\n' "$out"
@@ -71,6 +73,8 @@ case $name in
     forbid="$dev_only|percona-server-server|$(others_scripts haproxy)|haproxy-[0-9.]+" ;;
   percona-fluentbit) repo_name=percona-fluentbit suffix='' full=$(v fluentbit_version) series=$(v fluentbit_series)
     forbid="$dev_only|percona-server-server|$(others_scripts fluentbit)" ;;
+  percona-orchestrator) repo_name=percona-orchestrator suffix='' full=$(v orc_version)-$(v orc_release) series=$(v orc_version)
+    forbid="$dev_only|percona-server-[a-z0-9-]*|percona-mysql-router[a-z0-9-]*|percona-xtrabackup[a-z0-9-]*|$(others_scripts orchestrator)" ;;
   *) die "unknown image: $name" ;;
 esac
 

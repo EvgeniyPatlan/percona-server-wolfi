@@ -27,7 +27,8 @@ lint-recipes: render
 # Package builds (melange, privileged container). Order matters: later packages depend on earlier ones.
 PACKAGES := mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtrabackup \
   percona-telemetry-agent percona-server-docker-scripts percona-xtrabackup-docker-scripts \
-  percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts
+  percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts \
+  percona-orchestrator percona-orchestrator-docker-scripts
 
 .PHONY: packages $(addprefix pkg-,$(PACKAGES))
 

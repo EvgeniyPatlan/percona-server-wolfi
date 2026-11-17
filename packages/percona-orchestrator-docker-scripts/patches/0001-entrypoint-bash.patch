@@ -1,0 +1,13 @@
+Wolfi deviation (docs/deviations.md, "orchestrator entrypoint.sh shebang"): the script starts with #!/bin/sh
+but uses bash syntax: `$(</var/run/secrets/.../namespace)` and `$(<$PATH_TO_SECRET/$TOPOLOGY_USER)` (the
+Kubernetes namespace and the topology password). On UBI 9 /bin/sh is bash; on Wolfi it is busybox ash, where
+`$(<file)` expands to an empty string, so the namespace and the password would be lost. Run it with bash.
+
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -1,4 +1,4 @@
+-#!/bin/sh
++#!/bin/bash
+ set -e
+
+ export PATH=$PATH:/usr/local/orchestrator
