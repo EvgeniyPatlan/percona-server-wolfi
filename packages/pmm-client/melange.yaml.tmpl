@@ -106,7 +106,11 @@ pipeline:
         -tags 'osusergo netgo static_build' -o "$out/pmm-agent-entrypoint" ./cmd/pmm-agent-entrypoint
       # the Makefile's own check: the release pmm-agent is static
       "$out/pmm-agent" --version
-      ldd "$out/pmm-agent" 2>&1 | grep -Fq 'not a dynamic executable'
+      # (ldd is not in the build environment: a static ELF has no program interpreter, which readelf shows)
+      if readelf -lW "$out/pmm-agent" | grep 'Requesting program interpreter' > /dev/null; then
+        echo "pmm-agent is not static" >&2
+        exit 1
+      fi
       cd ../admin
       CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$(vf pmm-admin)" -o "$out/pmm-admin" ./cmd/pmm-admin/
 
@@ -239,7 +243,8 @@ subpackages:
       pipeline:
         - runs: |
             /usr/local/percona/pmm/exporters/vmagent -version
-            /usr/local/percona/pmm/exporters/vmagent -help 2>&1 | grep -q remoteWrite.url
+            # grep reads the whole help text: grep -q would exit early and SIGPIPE vmagent under pipefail
+            /usr/local/percona/pmm/exporters/vmagent -help 2>&1 | grep remoteWrite.url > /dev/null
 
   - name: pmm-client-node-exporter
     description: Percona node_exporter @@pmm_node_exporter_version@@ for PMM, with the textfile collector examples
@@ -441,7 +446,8 @@ subpackages:
             - bash
       pipeline:
         - runs: |
-            /usr/local/percona/pmm/exporters/valkey_exporter -version 2>&1 | grep -i redis_exporter
+            # it prints "Redis Metrics Exporter <<< filled in by build >>> ...": upstream sets no version ldflags (as the official binary)
+            /usr/local/percona/pmm/exporters/valkey_exporter -version 2>&1 | grep 'Redis Metrics Exporter' > /dev/null
 
   - name: pmm-client-nomad
     description: HashiCorp Nomad @@pmm_nomad_version@@ as shipped in the PMM client (tools/nomad)
@@ -493,12 +499,20 @@ subpackages:
             - wolfi-base
             - busybox
             - bash
+            # the summary scripts need GNU awk/sed/grep/coreutils (busybox's fail); the image installs the same set
+            - gawk
+            - sed
+            - grep
+            - coreutils
       pipeline:
         - runs: |
             t=/usr/local/percona/pmm/tools
             $t/pt-mongodb-summary --version
             $t/pt-pg-summary --version
-            $t/pt-summary --version
+            # pt-summary --version prints the version and then exits 1 (upstream's option parser): check the text
+            v=$($t/pt-summary --version || true)
+            echo "$v"
+            case $v in "pt-summary "*) ;; *) echo "pt-summary --version printed: $v" >&2; exit 1 ;; esac
             $t/pt-mysql-summary --version
 
 test:

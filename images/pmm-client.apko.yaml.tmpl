@@ -45,6 +45,27 @@ accounts:
       shell: /sbin/nologin
   run-as: "1002"
 
+# apko does not keep non-root owners from the apks. The official image's tree is owned by pmm-agent (1002:0, mode 0755,
+# also for the plain files), the top directory 1002:1002 0775, config/pmm-agent.yaml 0660: set here, in this order
+# (the recursive entry first, then the two exceptions).
+paths:
+  - path: /usr/local/percona/pmm
+    type: permissions
+    uid: 1002
+    gid: 0
+    permissions: 0o755
+    recursive: true
+  - path: /usr/local/percona/pmm
+    type: directory
+    uid: 1002
+    gid: 1002
+    permissions: 0o775
+  - path: /usr/local/percona/pmm/config/pmm-agent.yaml
+    type: permissions
+    uid: 1002
+    gid: 0
+    permissions: 0o660
+
 entrypoint:
   command: /usr/local/percona/pmm/bin/pmm-agent-entrypoint
 work-dir: /usr/local/percona/pmm/

@@ -237,6 +237,17 @@ pipeline:
         "$d"/usr/share/man/man1/make_win_bin_dist.1* \
         "$d/usr/share/percona-xtradb-cluster/win_install_firewall.sql" \
         "$d/usr/share/percona-xtradb-cluster/audit_log_filter_win_install.sql"
+      # pyclustercheck is a Python 2 script (#!/usr/bin/python2); Wolfi has no Python 2 and the official image never ran it
+      # (no python there): not shipped (docs/deviations.md)
+      rm -f "$d/usr/bin/pyclustercheck"
+      # wsrep_sst_xtrabackup-v2 verifies pxc_extra/pxb-8.4 (the previous LTS, for SST from an 8.4 donor during an
+      # upgrade) before every SST. Only pxb-9.7 is bundled here (docs/deviations.md), so that check runs only when an
+      # 8.4 tree is present; SST between 9.7 nodes is unaffected.
+      sst="$d/usr/bin/wsrep_sst_xtrabackup-v2"
+      want='verify_pxb_version "${XTRABACKUP_PREV_LTS_VER_PATH}" "${XB_PREV_LTS_REQUIRED_VERSION}"'
+      test "$(grep -cxF "$want" "$sst")" = 1
+      sed -i 's|^verify_pxb_version "${XTRABACKUP_PREV_LTS_VER_PATH}" "${XB_PREV_LTS_REQUIRED_VERSION}"$|if [[ -d ${XTRABACKUP_PREV_LTS_VER_PATH} ]]; then verify_pxb_version "${XTRABACKUP_PREV_LTS_VER_PATH}" "${XB_PREV_LTS_REQUIRED_VERSION}"; fi|' "$sst"
+      grep -qF 'if [[ -d ${XTRABACKUP_PREV_LTS_VER_PATH} ]]; then verify_pxb_version' "$sst"
       if [ -d "$d/usr/man" ]; then rm -rf "$d/usr/man"; fi
       if [ -d "$d/usr/doc" ]; then rm -rf "$d/usr/doc"; fi
       find "$d" \( -name 'INFO_BIN*' -o -name 'INFO_SRC*' \) -exec rm -f {} +
@@ -471,7 +482,7 @@ subpackages:
   # --nodeps and has neither interpreter, so they never ran there; the image does not install this subpackage.
   # Shell scripts (wsrep_sst_*, clustercheck, mysqld_safe, ps_mysqld_helper) stay in -server: SST needs them.
   - name: percona-xtradb-cluster-scripts
-    description: Percona XtraDB Cluster perl/python helper scripts (mysqld_multi, mysqldumpslow, pyclustercheck)
+    description: Percona XtraDB Cluster perl helper scripts (mysqld_multi, mysqldumpslow, ...)
     dependencies:
       runtime:
         - percona-xtradb-cluster-server

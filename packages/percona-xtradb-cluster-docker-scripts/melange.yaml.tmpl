@@ -7,6 +7,10 @@ package:
     - license: GPL-2.0-only
   # /usr/bin/telemetry-agent-supervisor.sh is also in percona-telemetry-agent (the percona-server variant, which
   # reports PRODUCT_FAMILY_PS); this package ships the PXC one from percona-xtradb-cluster-9.x/ and wins in the image.
+  # `replaces` settles the file; no-commands keeps melange from also declaring cmd:telemetry-agent-supervisor.sh, which
+  # the agent provides too (the apk solver refuses two providers of one command in the same image).
+  options:
+    no-commands: true
   dependencies:
     replaces:
       - percona-telemetry-agent
@@ -90,6 +94,11 @@ pipeline:
       install -d -m0775 "$d/etc/mysql/conf.d" "$d/etc/percona-xtradb-cluster.conf.d" "$d/docker-entrypoint-initdb.d"
       chmod 0775 "$d/etc/mysql"
       chmod 0664 "$d/etc/mysql/node.cnf"
+      # PXC 9.7 only knows wsrep_applier_threads (wsrep_slave_threads was removed: mysqld aborts on "unknown variable").
+      # percona-docker at the pinned commit still has the old name; the published official 9.7.2-2.1 image ships
+      # node.cnf with wsrep_applier_threads=2 (its build used a newer percona-docker), so the same rename is applied.
+      sed -i 's/^wsrep_slave_threads=/wsrep_applier_threads=/' "$d/etc/mysql/node.cnf"
+      grep -qx 'wsrep_applier_threads=2' "$d/etc/mysql/node.cnf"
       chown -R 1001:1001 "$d/etc/mysql" "$d/etc/percona-xtradb-cluster.conf.d" "$d/docker-entrypoint-initdb.d"
       # /var/lib/mysql and /var/log/mysql are created by the image (apko paths), not packaged
       test "$(stat -c '%u:%g %a' "$d/etc/mysql/node.cnf")" = "1001:1001 664"

@@ -50,7 +50,13 @@ pxc_node() {
   for e in "$@"; do envs+=(-e "$e"); done
   full=$(ps_prefix)-$name
   ps_track containers "$full"
+  # the SST script reads pxc-encrypt-cluster-traffic from the config files only (parse_cnf), not from mysqld's command
+  # line: without this file it would run an encrypted SST and need a CA
+  local noenc=$BATS_TEST_TMPDIR/no-cluster-encryption.cnf
+  printf '[mysqld]\npxc-encrypt-cluster-traffic=OFF\n' > "$noenc"
+  chmod 0644 "$noenc"
   ps_docker run -d --name "$full" --hostname "$full" --network "$net" -e PERCONA_TELEMETRY_DISABLE=1 \
+    -v "$noenc:/etc/mysql/conf.d/no-cluster-encryption.cnf:ro" \
     -e MYSQL_ROOT_PASSWORD=x "${envs[@]}" "$PXC_IMAGE" --pxc-encrypt-cluster-traffic=OFF > /dev/null || return 1
   printf '%s\n' "$full"
 }
@@ -74,7 +80,14 @@ pxc_wait_synced() {
       return 1
     fi
     st=$(pxc_status "$c" wsrep_local_state_comment || true)
-    [[ $st == Synced ]] && return 0
+    # the entrypoint's temporary init server (same socket, no TCP) is a Synced one-node cluster too: on a fresh datadir
+    # only the final server counts
+    if [[ $st == Synced ]]; then
+      local logs
+      logs=$(ps_logs "$c")
+      [[ $logs != *"Initializing database"* || $logs == *"MySQL init process done"* ]] && return 0
+      st="Synced (entrypoint init still running)"
+    fi
     if ((SECONDS >= deadline)); then
       echo "pxc_wait_synced: $c is '$st' after ${timeout}s" >&2
       ps_logs "$c" | tail -n 60 >&2

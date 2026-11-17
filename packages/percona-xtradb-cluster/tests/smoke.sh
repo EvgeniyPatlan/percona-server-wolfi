@@ -85,7 +85,9 @@ for f in /usr/bin/mysqld /usr/bin/garbd "$PROVIDER" /usr/bin/mysql; do
 done
 echo "ok: ldd"
 # the official image's perl/python-free server: no shipped server file needs an interpreter other than sh/bash
+# (wsrep_sst_common is a library the wsrep_sst_* scripts source: no #! line, nothing to check)
 for f in /usr/bin/wsrep_sst_xtrabackup-v2 /usr/bin/wsrep_sst_common /usr/bin/clustercheck; do
+  [[ $(head -c 2 "$f") == '#!' ]] || continue
   head -n1 "$f" | grep -Eq '^#! ?/(usr/)?bin/(env )?(ba)?sh' || fail "$f: unexpected interpreter $(head -n1 "$f")"
 done
 
@@ -116,10 +118,14 @@ vc=$(sql 'SELECT @@version_comment')
 echo "ok: version_comment = $vc"
 sql 'CREATE DATABASE s; CREATE TABLE s.t (id INT PRIMARY KEY, v VARCHAR(10)); INSERT INTO s.t VALUES (1, "a")'
 expect 1 "$(sql 'SELECT COUNT(*) FROM s.t')" "row count after insert"
-# pxc_strict_mode=ENFORCING refuses a table without a primary key for DML
-sql 'CREATE TABLE s.nopk (v INT)'
-if sql 'INSERT INTO s.nopk VALUES (1)' 2> /dev/null; then fail "pxc_strict_mode did not refuse DML on a table without a PK"; fi
-echo "ok: pxc_strict_mode enforced"
+# tables without a primary key are refused: PXC 9.7 already at CREATE (sql_require_primary_key), otherwise
+# pxc_strict_mode=ENFORCING at the first DML
+if sql 'CREATE TABLE s.nopk (v INT)' 2> /dev/null; then
+  if sql 'INSERT INTO s.nopk VALUES (1)' 2> /dev/null; then fail "a table without a PK accepted DML"; fi
+  echo "ok: pxc_strict_mode refuses DML on a table without a PK"
+else
+  echo "ok: a table without a PK is refused at CREATE (sql_require_primary_key)"
+fi
 mysqladmin --no-defaults --user=root --socket="$sock" shutdown
 wait "$pid" || true
 pid=
