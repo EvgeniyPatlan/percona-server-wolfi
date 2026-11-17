@@ -1,0 +1,130 @@
+package:
+  name: perl-dbd-mysql
+  version: "@@dbd_mysql_version@@"
+  epoch: 0
+  description: DBD::mysql @@dbd_mysql_version@@, the Perl DBI driver for MySQL, built against the Percona Server @@ps_version@@-@@ps_release@@ client library
+  copyright:
+    - license: GPL-1.0-or-later OR Artistic-1.0-Perl
+  dependencies:
+    runtime:
+      - perl
+      - perl-dbi
+      # libperconaserverclient.so.24 (/usr/lib/mysql, found through /etc/ld.so.conf.d/mysql-x86_64.conf); melange also
+      # records the so: dependency of the linked library
+      - percona-server-libs
+
+# Not in Wolfi. The official percona/percona-toolkit image gets DBD::mysql from the el9 rpm perl-DBD-MySQL (5.011,
+# against the Percona Server 8.0 client libraries); here it is built from the CPAN release against this repository's
+# percona-server-dev (mysql_config, libperconaserverclient). Version choice: docs/deviations.md.
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - perl
+      - perl-dev
+      - perl-dbi
+      # Makefile.PL: `use Devel::CheckLib` (checks that the client library links)
+      - perl-devel-checklib
+      # local repo (packages/percona-server): mysql_config, headers, libperconaserverclient.so
+      - percona-server-dev
+      # mysql_config --libs: -lperconaserverclient -lz -lzstd -lssl -lcrypto -lresolv -lm; OpenSSL 3 as the client
+      # library (Wolfi's default openssl-dev is 4.0, see docs/deviations.md "OpenSSL")
+      - openssl-dev~3.6
+      - zlib-dev
+      - zstd-dev
+
+pipeline:
+  - uses: fetch
+    with:
+      uri: @@dbd_mysql_url@@
+      expected-sha256: @@dbd_mysql_sha256@@
+      strip-components: 1
+
+  # Perl's own compiler and linker flags (ABI) plus the shared hardening baseline (ruling R7): OPTIMIZE is appended to
+  # the compile line, LDDLFLAGS replaces the shared-object link flags, so perl's are kept and the baseline is added.
+  - name: Configure and build
+    runs: |
+      set -eu
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@ PERL_MM_USE_DEFAULT=1 LC_ALL=C
+      test "$(mysql_config --version)" = "@@ps_version@@-@@ps_release@@"
+      lddl=$(perl -MConfig -e 'print $Config{lddlflags}')
+      perl Makefile.PL INSTALLDIRS=vendor --mysql_config=/usr/bin/mysql_config \
+        OPTIMIZE="-O2 -g @@hardening_cflags@@ -ffile-prefix-map=$(pwd)=." \
+        LDDLFLAGS="$lddl @@hardening_ldflags@@"
+      # no RPATH: MakeMaker bakes LD_RUN_PATH=/usr/lib64/mysql:/usr/lib (from mysql_config --libs) into the link; the
+      # client library is found through /etc/ld.so.conf.d/mysql-x86_64.conf (percona-server-libs) and ld.so.cache, as
+      # for every other user of it. An empty LD_RUN_PATH would still leave an empty DT_RPATH, so it is removed.
+      grep -q '^LD_RUN_PATH = ' Makefile
+      perl -ni -e 'next if /^LD_RUN_PATH = /; s/LD_RUN_PATH="\$\(LD_RUN_PATH\)" //; print' Makefile
+      if grep -v '^#' Makefile | grep LD_RUN_PATH; then echo "LD_RUN_PATH still in the Makefile" >&2; exit 1; fi
+      make
+      # the module reports the version this recipe is named after
+      perl -Mblib -e 'require DBD::mysql; exit($DBD::mysql::VERSION eq "@@dbd_mysql_version@@" ? 0 : 1)'
+
+  - name: Install
+    runs: |
+      set -eu
+      d="${{targets.destdir}}"
+      make install DESTDIR="$d"
+      # what Wolfi's perl/cleanup does: no perllocal.pod, no .packlist (the apk owns the file list)
+      find "$d" \( -name perllocal.pod -o -name .packlist \) -delete
+      find "$d" -type d -empty -delete
+      install -Dm0644 LICENSE "$d/usr/share/licenses/perl-dbd-mysql/LICENSE"
+      so=$(find "$d" -path '*/auto/DBD/mysql/mysql.so')
+      test -n "$so"
+      echo "installed: $so"
+
+  - uses: strip
+
+  - name: Build-path leak scan
+    runs: |
+      bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)"
+
+subpackages:
+  - name: perl-dbd-mysql-doc
+    description: perl-dbd-mysql manual pages
+    pipeline:
+      - uses: split/manpages
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - perl-dbd-mysql
+        # throwaway mysqld for the connect test (local repo, packages/percona-server)
+        - percona-server-server
+        - percona-server-client
+        # readelf for the hardening step
+        - binutils
+  pipeline:
+    - name: smoke test (tests/smoke.sh)
+      runs: |
+        test -f tests/smoke.sh || { echo "tests/smoke.sh missing from the test workspace (staged source dir)" >&2; exit 1; }
+        DBD_MYSQL_VERSION="@@dbd_mysql_version@@" PS_VERSION="@@ps_version@@" bash tests/smoke.sh
+    - name: hardening (RELRO, BIND_NOW, stack protector) and the client library
+      runs: |
+        so=$(perl -MDBD::mysql -e 'print $INC{"DBD/mysql.pm"}' | sed 's#/DBD/mysql.pm$#/auto/DBD/mysql/mysql.so#')
+        # grep without -q: an early exit would make readelf fail with SIGPIPE under pipefail
+        readelf -lW "$so" | grep GNU_RELRO > /dev/null || { echo "$so: no GNU_RELRO segment" >&2; exit 1; }
+        readelf -dW "$so" | grep -E '\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' > /dev/null || { echo "$so: no BIND_NOW" >&2; exit 1; }
+        readelf --dyn-syms -W "$so" | grep __stack_chk_fail > /dev/null || { echo "$so: no __stack_chk_fail import" >&2; exit 1; }
+        readelf -dW "$so" | grep 'NEEDED.*libperconaserverclient\.so\.24' > /dev/null || { echo "$so: not linked to libperconaserverclient" >&2; exit 1; }
+        if readelf -dW "$so" | grep -E '\((RPATH|RUNPATH)\)'; then echo "$so: has an RPATH/RUNPATH" >&2; exit 1; fi
+        echo "ok: $so"
+
+update:
+  enabled: false

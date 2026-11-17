@@ -1,0 +1,192 @@
+package:
+  name: percona-toolkit
+  # apk versions cannot contain "-": 3.7.1-4 becomes 3.7.1.4 (same convention as percona-server)
+  version: "@@pt_version@@.@@pt_release@@"
+  epoch: 0
+  description: Percona Toolkit @@pt_version@@-@@pt_release@@ (the pt-* Perl and shell tools and the Go tools the rpm ships)
+  copyright:
+    - license: GPL-2.0-only
+  dependencies:
+    runtime:
+      # rpm Requires: perl(DBI), perl(DBD::mysql), perl(Digest::MD5), perl(IO::Socket::SSL), perl(Term::ReadKey),
+      # perl(Time::HiRes), perl-English/FindBin/Sys-Hostname/sigtrap (in Wolfi's perl), /bin/sh
+      - perl
+      - perl-dbi
+      - perl-dbd-mysql
+      - perl-digest-md5
+      - perl-io-socket-ssl
+      - perl-term-readkey
+      - perl-time-hires
+      # pt-stalk, pt-mysql-summary, pt-summary, pt-sift, ... are bash/sh scripts; pt-mysql-summary needs GNU awk
+      # (`%*x` printf formats: busybox awk fails on them), as ubi9's gawk in the official image
+      - bash
+      - busybox
+      - gawk
+
+# The rpm percona-toolkit-@@pt_version@@-@@pt_release@@ of the official percona/percona-toolkit image, from the git tag:
+# the 35 tools of bin/ (Perl, bash, sh) installed by Makefile.PL, plus the 7 Go tools of src/go (pt-galera-log-explainer,
+# pt-k8s-debug-collector, pt-mongodb-index-check, pt-mongodb-query-digest, pt-mongodb-summary, pt-pg-summary,
+# pt-secure-collect), dynamically linked as the official binaries (cgo on). /licenses/LICENSE.Dockerfile of the image
+# comes from percona-docker percona-toolkit/ at percona_docker_commit (subpackage percona-toolkit-docker-license).
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - git
+      - perl
+      # go.mod says `go 1.26.4`; GOTOOLCHAIN=local below keeps the toolchain from being downloaded
+      - go-@@pt_go@@
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/percona-toolkit
+      tag: "@@pt_tag@@"
+      expected-commit: "@@pt_commit@@"
+      destination: pt-src
+
+  # percona-docker has no release tags; fetch the pinned commit by hash and verify it
+  - name: Fetch percona-docker (pinned commit)
+    runs: |
+      set -eu
+      mkdir pd-src && cd pd-src
+      git init -q
+      git fetch -q --depth 1 https://github.com/percona/percona-docker @@percona_docker_commit@@
+      git checkout -q FETCH_HEAD
+      test "$(git rev-parse HEAD)" = "@@percona_docker_commit@@"
+
+  - name: Check source version
+    runs: |
+      set -eu
+      cd pt-src
+      grep -qF "VERSION   => '@@pt_version@@-@@pt_release@@'," Makefile.PL
+      # every tool of bin/ carries the release version
+      stale=$(grep -LF "@@pt_version@@-@@pt_release@@" bin/pt-*) || true
+      if [ -n "$stale" ]; then echo "tools without version @@pt_version@@-@@pt_release@@: $stale" >&2; exit 1; fi
+      test "$(ls bin | wc -l)" -eq 35
+      test "$(ls -d src/go/pt-* | wc -l)" -eq 7
+
+  # Upstream (Makefile.PL postamble -> src/go/Makefile `build`) runs `go get ./...` and then, per tool,
+  # go build -ldflags "-X main.Version=<v> -X main.Build=<date> -X main.GoVersion=<go> -X main.Commit=<sha> -s -w".
+  # Same ldflags here; instead of `go get` (rewrites go.mod) the modules come from go.sum (-mod=readonly).
+  # Reproducibility: -trimpath, -buildvcs=false, the build date from pt_source_date_epoch. cgo stays on (upstream
+  # default; the official binaries link libc and libresolv) with the shared hardening baseline (ruling R7) and Wolfi's
+  # unwrapped gcc, as the other compiled recipes.
+  - name: Build the Go tools
+    runs: |
+      set -eu
+      export GOTOOLCHAIN=local GOFLAGS="-mod=readonly -trimpath -buildvcs=false"
+      export GOMODCACHE=/var/cache/melange/gomodcache CGO_ENABLED=1 CC=/usr/bin/gcc
+      export CGO_CFLAGS="-O2 -g @@hardening_cflags@@" CGO_LDFLAGS="@@hardening_ldflags@@"
+      e=@@pt_source_date_epoch@@
+      build_date=$(date -u -d "@$e" +%FT%T%z)
+      gover=$(go version | cut -d' ' -f3)
+      cd pt-src/src/go
+      for p in pt-*; do
+        go build -ldflags "-X main.Version=@@pt_version@@-@@pt_release@@ -X main.Build=$build_date -X main.GoVersion=$gover -X main.Commit=@@pt_commit@@ -s -w" \
+          -o "../../bin/$p" "./$p"
+      done
+      ../../bin/pt-mongodb-summary --version | grep -x 'Version @@pt_version@@-@@pt_release@@'
+
+  # Makefile.PL as upstream, on the file set of the release tarball the rpm is built from (MANIFEST: no lib/, no t/;
+  # otherwise MakeMaker would install lib/*.pm as top-level Perl modules). Its `gotools` rule would rebuild the Go
+  # tools with upstream's flags: that one command is replaced, the rule still copies the binaries built above.
+  # Shebangs as in the rpm (its brp-mangle-shebangs): `#!/usr/bin/env perl` -> `#!/usr/bin/perl`, `#!/usr/bin/env bash`
+  # -> `#!/usr/bin/bash`, `#!/bin/sh` -> `#!/usr/bin/sh` (MakeMaker's fixin leaves `env` lines alone).
+  - name: Build and install the tools (Makefile.PL)
+    runs: |
+      set -eu
+      export SOURCE_DATE_EPOCH=@@pt_source_date_epoch@@ PERL_MM_USE_DEFAULT=1 LC_ALL=C
+      d="${{targets.destdir}}"
+      cd pt-src
+      rm -rf lib t
+      perl Makefile.PL INSTALLDIRS=vendor
+      gorule='^\tcd src/go && VERSION=\$\(VERSION\) \$\(MAKE\) build$'
+      RULE=$gorule perl -ne '$n++ if /$ENV{RULE}/; END { exit($n == 1 ? 0 : 1) }' Makefile
+      RULE=$gorule perl -pi -e 's{$ENV{RULE}}{\t\@echo "Go tools: built by the recipe"}' Makefile
+      if grep -qF '$(MAKE) build' Makefile; then echo "the gotools rule still builds" >&2; exit 1; fi
+      make
+      make install DESTDIR="$d"
+      find "$d" \( -name perllocal.pod -o -name .packlist \) -delete
+      find "$d" -type d -empty -delete
+      for f in "$d"/usr/bin/pt-*; do
+        head -c4 "$f" | grep -q ELF && continue
+        sed -i -e '1s|^#!/usr/bin/env perl$|#!/usr/bin/perl|' -e '1s|^#!/usr/bin/env bash$|#!/usr/bin/bash|' \
+          -e '1s|^#!/bin/sh$|#!/usr/bin/sh|' "$f"
+        case $(head -n1 "$f") in
+          '#!/usr/bin/perl' | '#!/usr/bin/bash' | '#!/usr/bin/sh') ;;
+          *) echo "$f: unexpected shebang $(head -n1 "$f")" >&2; exit 1 ;;
+        esac
+      done
+      # rpm %doc and the license
+      for f in COPYING Changelog INSTALL README.md; do install -Dm0644 "$f" "$d/usr/share/doc/percona-toolkit/$f"; done
+      install -Dm0644 COPYING "$d/usr/share/licenses/percona-toolkit/COPYING"
+
+  - name: Check the install tree (rpm %files)
+    runs: |
+      set -eux
+      d="${{targets.destdir}}"
+      test "$(ls "$d"/usr/bin/pt-* | wc -l)" -eq 42
+      head -n1 "$d/usr/bin/pt-heartbeat" | grep -qx '#!/usr/bin/perl'
+      for p in pt-galera-log-explainer pt-k8s-debug-collector pt-mongodb-index-check pt-mongodb-query-digest \
+        pt-mongodb-summary pt-pg-summary pt-secure-collect; do
+        head -c4 "$d/usr/bin/$p" | grep -q ELF
+      done
+      test -f "$d/usr/share/man/man1/pt-heartbeat.1p"
+      expected='^(usr/bin/pt-[a-z0-9-]+|usr/share/man/man1/(percona-toolkit|pt-[a-z0-9-]+)\.1p|usr/share/doc/percona-toolkit/[A-Za-z.]+|usr/share/licenses/percona-toolkit/COPYING)$'
+      unexpected=$(cd "$d" && find . -mindepth 1 \( -type f -o -type l \) | sed 's#^\./##' | LC_ALL=C sort | grep -Ev "$expected") || true
+      if [ -n "$unexpected" ]; then echo "outside the rpm %files set:" >&2; echo "$unexpected" >&2; exit 1; fi
+
+  - name: Build-path leak scan
+    runs: |
+      bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)"
+
+subpackages:
+  - name: percona-toolkit-doc
+    description: Percona Toolkit manual pages (man1 *.1p, as in the rpm)
+    pipeline:
+      - uses: split/manpages
+
+  # percona-docker percona-toolkit/Dockerfile: COPY LICENSE /licenses/LICENSE.Dockerfile
+  - name: percona-toolkit-docker-license
+    description: License of the official percona/percona-toolkit image's Dockerfile (/licenses/LICENSE.Dockerfile)
+    pipeline:
+      - runs: |
+          install -Dm0644 pd-src/percona-toolkit/LICENSE "${{targets.subpkgdir}}/licenses/LICENSE.Dockerfile"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - coreutils
+        - gawk
+        - grep
+        - sed
+        - findutils
+        - procps
+        - percona-toolkit
+        # throwaway mysqld for pt-heartbeat and pt-mysql-summary (local repo, packages/percona-server)
+        - percona-server-server
+        - percona-server-client
+  pipeline:
+    - name: smoke test (tests/smoke.sh)
+      runs: |
+        test -f tests/smoke.sh || { echo "tests/smoke.sh missing from the test workspace (staged source dir)" >&2; exit 1; }
+        PT_VERSION="@@pt_version@@-@@pt_release@@" bash tests/smoke.sh
+
+update:
+  enabled: false

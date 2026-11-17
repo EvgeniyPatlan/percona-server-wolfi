@@ -1,8 +1,8 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
 Builds Percona Server for MySQL 9.7 (with MySQL Router), Percona XtraBackup 9.7, Percona XtraDB Cluster 9.7 (with
-Galera and garbd) and Percona Binlog Server from source as Wolfi apk packages (melange) and assembles thirteen container
-images from them (apko). Not an official Percona image.
+Galera and garbd), Percona Binlog Server and Percona Toolkit 3.7 from source as Wolfi apk packages (melange) and
+assembles fourteen container images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
@@ -19,6 +19,7 @@ images from them (apko). Not an official Percona image.
 | `percona-xtradb-cluster-operator:1.20.0` | Drop-in replacement for the official `percona/percona-xtradb-cluster-operator:1.20.0` (Percona Operator for MySQL based on PXC): the manager and its init-container helpers, built from the `v1.20.0` tag. |
 | `percona-proxysql3:3.0` | Drop-in replacement for the official `percona/proxysql3:3.0.9-1.1` (PXC operator): ProxySQL 3.0.9 (Wolfi's `proxysql` package, same upstream release) with Percona's `proxysql-admin` tools, the same entrypoint and configuration, and the Percona Server client. |
 | `percona-binlog-server:0.4` | Drop-in replacement for `perconalab/percona-binlog-server:0.4.1`, the image the Percona Operator for MySQL uses for binlog storage and point-in-time recovery: `binlog_server` 0.4.1 streaming binary logs to a local directory or S3. |
+| `percona-toolkit:3.7` | Drop-in replacement for the official `percona/percona-toolkit:3.7.1-4`: all 42 `pt-*` tools (Perl, shell and Go), DBD::mysql and the Percona Server client; the Percona Operator's `pt-heartbeat` sidecar runs from it. |
 
 ## Packages
 
@@ -47,6 +48,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-xtradb-cluster-docker-scripts` | Entrypoint and dockerdir of the PXC image from percona-docker (Wolfi-patched); `-docker-config` (my.cnf, node.cnf), `-backup-scripts` (the backup image's scripts) |
 | `percona-binlog-server` | Percona Binlog Server (`binlog_server`), with Boost and the AWS SDK for C++ built in statically; subpackage `-dbg` |
 | `percona-binlog-server-docker-scripts` | percona-docker's LICENSE for the binlog server image and the RHEL CA bundle path the operator mounts |
+| `perl-dbd-mysql` | DBD::mysql from CPAN, built against `percona-server-dev` (not in Wolfi), for the toolkit |
+| `percona-toolkit` | Percona Toolkit: the Perl/shell tools and the Go tools the rpm ships; subpackages `-doc` (man pages), `-docker-license` |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -76,6 +79,7 @@ matches the apks (commit the rewritten lock file).
     scripts/build.sh percona-proxysql3        # only the ProxySQL image (server client, admin tools, entrypoint)
     scripts/build.sh percona-xtradb-cluster percona-xtradb-cluster-backup   # the PXC images (PXC, XtraBackup for SST)
     scripts/build.sh percona-binlog-server    # only the binlog server image (and the server packages it links)
+    scripts/build.sh percona-toolkit          # only the toolkit image (server build, DBD::mysql, toolkit)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -294,6 +298,19 @@ With a GTID-enabled server `ps` on the docker network `db` and a config in `./pb
       -v pbs-data:/var/lib/binlog-server/data $PBS binlog_server pull /etc/binlog_server/config.json
     docker run --rm -v $PWD/pbs.json:/etc/binlog_server/config.json:ro -v pbs-data:/var/lib/binlog-server/data \
       $PBS binlog_server list /etc/binlog_server/config.json
+
+### `percona-toolkit:3.7`: Percona Toolkit
+
+    TOOLKIT=localhost:5000/percona-toolkit:3.7
+
+As the official image: no entrypoint, `bash` by default, user `perconatoolkit` (uid 1001, gid 0). Run a tool against
+a server on the docker network `db`:
+
+    docker run --rm --network db $TOOLKIT pt-mysql-summary --host db1 --user root --ask-pass
+    docker run --rm --network db $TOOLKIT pt-online-schema-change --alter 'ADD COLUMN c INT' D=app,t=t1,h=db1,u=root --ask-pass --dry-run
+
+The Percona Server operator (`spec.toolkit.image`) runs its `pt-heartbeat` sidecar from this image with its own
+`/opt/percona/heartbeat-entrypoint.sh`, which needs `bash`, `timeout`, `mysql` and `pt-heartbeat` (all here).
 
 ## Official image vs this build
 

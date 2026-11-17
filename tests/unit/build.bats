@@ -48,7 +48,7 @@ have_apks() {
 @test "fresh tree: every package and image is planned, a dry run calls nothing" {
   run "$S" -n
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 22 ]
+  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 24 ]
   [[ $output == *"BUILD package percona-server (no $T/repo/x86_64/percona-server-9.7.2.2-r0.apk)"* ]]
   [[ $output == *"BUILD image percona-server (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-server-dev (no lock file (first build))"* ]]
@@ -64,6 +64,7 @@ have_apks() {
   [[ $output == *"BUILD image percona-xtradb-cluster (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-xtradb-cluster-backup (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-binlog-server (no lock file (first build))"* ]]
+  [[ $output == *"BUILD image percona-toolkit (no lock file (first build))"* ]]
   [ ! -e "$T/calls" ]
 }
 
@@ -92,25 +93,28 @@ have_apks() {
   [ "${lines[22]}" = "pkg-percona-xtradb-cluster-docker-scripts RELOCK=" ]
   [ "${lines[23]}" = "pkg-percona-binlog-server RELOCK=" ]
   [ "${lines[24]}" = "pkg-percona-binlog-server-docker-scripts RELOCK=" ]
-  [ "${lines[25]}" = "registry-up RELOCK=" ]
-  [ "${lines[26]}" = "image-percona-server RELOCK=" ]
-  [ "${lines[27]}" = "image-percona-server-dev RELOCK=" ]
-  [ "${lines[28]}" = "image-percona-xtrabackup RELOCK=" ]
-  [ "${lines[29]}" = "image-percona-mysql-router RELOCK=" ]
-  [ "${lines[30]}" = "image-percona-haproxy RELOCK=" ]
-  [ "${lines[31]}" = "image-percona-fluentbit RELOCK=" ]
-  [ "${lines[32]}" = "image-percona-orchestrator RELOCK=" ]
-  [ "${lines[33]}" = "image-percona-server-mysql-operator RELOCK=" ]
-  [ "${lines[34]}" = "image-percona-xtradb-cluster-operator RELOCK=" ]
-  [ "${lines[35]}" = "image-percona-proxysql3 RELOCK=" ]
-  [ "${lines[36]}" = "image-percona-xtradb-cluster RELOCK=" ]
-  [ "${lines[37]}" = "image-percona-xtradb-cluster-backup RELOCK=" ]
-  [ "${lines[38]}" = "image-percona-binlog-server RELOCK=" ]
+  [ "${lines[25]}" = "pkg-perl-dbd-mysql RELOCK=" ]
+  [ "${lines[26]}" = "pkg-percona-toolkit RELOCK=" ]
+  [ "${lines[27]}" = "registry-up RELOCK=" ]
+  [ "${lines[28]}" = "image-percona-server RELOCK=" ]
+  [ "${lines[29]}" = "image-percona-server-dev RELOCK=" ]
+  [ "${lines[30]}" = "image-percona-xtrabackup RELOCK=" ]
+  [ "${lines[31]}" = "image-percona-mysql-router RELOCK=" ]
+  [ "${lines[32]}" = "image-percona-haproxy RELOCK=" ]
+  [ "${lines[33]}" = "image-percona-fluentbit RELOCK=" ]
+  [ "${lines[34]}" = "image-percona-orchestrator RELOCK=" ]
+  [ "${lines[35]}" = "image-percona-server-mysql-operator RELOCK=" ]
+  [ "${lines[36]}" = "image-percona-xtradb-cluster-operator RELOCK=" ]
+  [ "${lines[37]}" = "image-percona-proxysql3 RELOCK=" ]
+  [ "${lines[38]}" = "image-percona-xtradb-cluster RELOCK=" ]
+  [ "${lines[39]}" = "image-percona-xtradb-cluster-backup RELOCK=" ]
+  [ "${lines[40]}" = "image-percona-binlog-server RELOCK=" ]
+  [ "${lines[41]}" = "image-percona-toolkit RELOCK=" ]
   [ -s "$T/stamps/pkg-percona-server" ] && [ -s "$T/stamps/image-percona-xtrabackup" ]
   rm "$T/calls"
   run "$S"
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^SKIP' <<< "$output")" -eq 35 ]
+  [ "$(grep -c '^SKIP' <<< "$output")" -eq 38 ]
   run cat "$T/calls"
   [ "$output" = "registry-up RELOCK=" ]
 }
@@ -130,7 +134,7 @@ have_apks() {
   [[ $output == *"SKIP  package percona-xtradb-cluster-docker-scripts (up to date)"* ]]
   [[ $output == *"SKIP  package percona-binlog-server-docker-scripts (up to date)"* ]]
   for p in v8 percona-server percona-mysql-shell percona-xtrabackup percona-server-docker-scripts \
-    percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts percona-proxysql-admin percona-proxysql-docker-scripts percona-xtradb-cluster percona-binlog-server; do
+    percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts percona-proxysql-admin percona-proxysql-docker-scripts percona-xtradb-cluster percona-binlog-server perl-dbd-mysql percona-toolkit; do
     [[ $output == *"BUILD package $p (inputs changed)"* ]]
   done
 }
@@ -175,6 +179,24 @@ have_apks() {
   run "$S" -n percona-proxysql3
   [[ $output == *"SKIP  image percona-proxysql3 (up to date)"* ]]
   grep -q "^http://localhost:5000/v2/percona-proxysql3/manifests/sha256:" "$T/curl.log"
+  [[ $output != *"toolkit"* ]]
+}
+
+@test "toolkit only: the server packages DBD::mysql is built against, DBD::mysql, the toolkit; its own repository" {
+  run "$S" -n percona-toolkit
+  [[ $output == *"BUILD package percona-server ("* ]]
+  [[ $output == *"BUILD package perl-dbd-mysql ("* ]]
+  [[ $output == *"BUILD package percona-toolkit ("* ]]
+  [[ $output != *"percona-mysql-shell"* ]]
+  [[ $output != *"percona-telemetry-agent"* ]]
+  [[ $output != *"xtrabackup"* ]]
+  [[ $output != *"docker-scripts"* ]]
+  [[ $output != *"image percona-server"* ]]
+  have_apks
+  "$S" percona-toolkit > /dev/null 2>&1
+  run "$S" -n percona-toolkit
+  [[ $output == *"SKIP  image percona-toolkit (up to date)"* ]]
+  grep -q "^http://localhost:5000/v2/percona-toolkit/manifests/sha256:" "$T/curl.log"
 }
 
 @test "router only: the server and mysqlsh, no telemetry agent or xtrabackup; its own registry repository" {
@@ -326,7 +348,7 @@ EOF
   STUB_CURL_RC=22 run "$S" -n --images-only
   [[ $output == *"BUILD image percona-server (digest not in localhost:5000)"* ]]
   run "$S" -n -f
-  [ "$(grep -c '(--force)' <<< "$output")" -eq 35 ]
+  [ "$(grep -c '(--force)' <<< "$output")" -eq 38 ]
 }
 
 @test "bad arguments are rejected" {

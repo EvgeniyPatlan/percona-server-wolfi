@@ -6,7 +6,7 @@ setup() {
   mkdir -p "$TMP/img" "$TMP/kd"
   for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-haproxy percona-fluentbit percona-orchestrator \
     percona-server-mysql-operator percona-xtradb-cluster-operator percona-proxysql3 percona-xtradb-cluster \
-    percona-xtradb-cluster-backup percona-binlog-server; do
+    percona-xtradb-cluster-backup percona-binlog-server percona-toolkit; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -185,6 +185,18 @@ STUB
   [[ $line == *"localhost:5000/percona-binlog-server:$v "* ]]
   [[ $line == *"localhost:5000/percona-binlog-server:$v-7"* ]]
   [[ $line != *":9.7"* ]]
+}
+
+@test "toolkit image is tagged with the toolkit version line in its own repository" {
+  BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" percona-toolkit
+  [ "$status" -eq 0 ]
+  pv=$(grep '^pt_version:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  v=$pv-$(grep '^pt_release:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  line=$(grep -E -- ' publish ' "$TMP/calls")
+  [[ $line == *"localhost:5000/percona-toolkit:${pv%.*} "* ]]
+  [[ $line == *"localhost:5000/percona-toolkit:$v "* ]]
+  [[ $line == *"localhost:5000/percona-toolkit:$v-7"* ]]
+  [[ $line != *"percona-toolkit:9.7"* ]]
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -442,6 +454,17 @@ mkgit_img() {
   rm -f "$TMP/img/percona-binlog-server.lock.json"
   LOCK_PKGS='{"name":"percona-binlog-server"},{"name":"percona-binlog-server-docker-scripts"},{"name":"percona-server-libs"},{"name":"bash"}' \
     run "$ROOT/scripts/apko-build.sh" percona-binlog-server
+  [ "$status" -eq 0 ]
+  # toolkit: perl and shells allowed; no server, mysqlsh, telemetry agent or other image's scripts
+  for p in percona-server-server percona-mysql-shell percona-telemetry-agent percona-server-docker-scripts \
+    percona-xtrabackup-docker-scripts; do
+    rm -f "$TMP/img/percona-toolkit.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-toolkit
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-toolkit.lock.json"
+  LOCK_PKGS='{"name":"percona-toolkit"},{"name":"perl-dbd-mysql"},{"name":"perl"},{"name":"bash"},{"name":"busybox"},{"name":"percona-server-client"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-toolkit
   [ "$status" -eq 0 ]
 }
 

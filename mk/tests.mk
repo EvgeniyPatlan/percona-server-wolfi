@@ -102,6 +102,14 @@ PBS_IMAGE ?= $(REGISTRY)/percona-binlog-server:0.4
 test-binlog-server: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) PBS_IMAGE=$(PBS_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/binlog-server.bats)
 
+# Percona Toolkit image: every pt-* tool, DBD::mysql against a server from the -dev image, pt-summary and
+# pt-mysql-summary, and the Percona Operator's pt-heartbeat sidecar (tests/fixtures/heartbeat-entrypoint.sh) on the
+# server's datadir volume (docker only, ~5 min).
+TOOLKIT_IMAGE ?= $(REGISTRY)/percona-toolkit:3.7
+.PHONY: test-toolkit
+test-toolkit: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) TOOLKIT_IMAGE=$(TOOLKIT_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/toolkit.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).
