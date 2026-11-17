@@ -148,11 +148,18 @@ main_apk() {
   printf '%s/%s-%s-r%s.apk\n' "$repo" "$1" "$v" "${e:-0}"
 }
 
-# lock_matches <lock>: every local package the lock pins exists in out/repo with the pinned control checksum
+# lock_matches <lock> <rendered-config>: the lock was made from this rendered image config (apko refuses a lock whose
+# config checksum differs) and every local package it pins exists in out/repo with the pinned control checksum
 lock_matches() {
-  python3 -I - "$1" <<'EOF'
+  python3 -I - "$1" "$2" <<'EOF'
 import base64, hashlib, json, os, sys
-for p in json.load(open(sys.argv[1]))["contents"]["packages"]:
+lock = json.load(open(sys.argv[1]))
+want_cfg = lock.get("config", {}).get("checksum", "")
+if want_cfg.startswith("sha256-"):
+    got_cfg = base64.b64encode(hashlib.sha256(open(sys.argv[2], "rb").read()).digest()).decode()
+    if want_cfg[len("sha256-"):] != got_cfg:
+        print("image config changed since the lock was made"); sys.exit(1)
+for p in lock["contents"]["packages"]:
     url = p.get("url", "")
     if url.startswith(("http://", "https://")):
         continue
@@ -227,7 +234,9 @@ if ((do_images)); then
     relock=0 reason=
     # a stale lock is checked first: even with --force, apko-build.sh would otherwise build from it and fail
     if [[ ! -s $lock ]]; then reason="no lock file (first build)"
-    elif ! why=$(lock_matches "$lock"); then reason="lock file stale ($why): re-locking"; relock=1
+    elif ! scripts/render.sh "$images_dir/$i.apko.yaml.tmpl" "$version_file" "$tmp/$i.apko.yaml" > /dev/null; then
+      die "cannot render $images_dir/$i.apko.yaml.tmpl"
+    elif ! why=$(lock_matches "$lock" "$tmp/$i.apko.yaml"); then reason="lock file stale ($why): re-locking"; relock=1
     elif ((force)); then reason="--force"
     elif [[ ! -s $digest_file ]]; then reason="no $digest_file"
     elif ! in_registry "$i" "$(head -n1 "$digest_file")"; then reason="digest not in $registry"

@@ -46,12 +46,24 @@ accounts:
 # Dockerfile: mkdir -p /etc/orchestrator /var/lib/orchestrator; chown -R 1001:1001 both, then COPY dockerdir / (which
 # leaves /etc/orchestrator root:root 0755; the two configuration files are chowned to 1001 by the scripts package).
 # VOLUME ["/var/lib/orchestrator"] and EXPOSE 3000 10008 cannot be declared by apko (the directory exists, owned by 1001).
+# apko does not keep non-root owners from the apks: the two config files the entrypoint rewrites (owned by 1001 in the
+# official image, /etc/orchestrator itself stays root 0755) get their owner here.
 paths:
   - path: /var/lib/orchestrator
     type: directory
     uid: 1001
     gid: 1001
     permissions: 0o755
+  - path: /etc/orchestrator/orchestrator.conf.json
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o644
+  - path: /etc/orchestrator/orc-topology.cnf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o644
 
 entrypoint:
   command: /entrypoint.sh

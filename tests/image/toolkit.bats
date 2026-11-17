@@ -69,8 +69,9 @@ server_on() {
   run tk_run -- bash -c 'command -v bash timeout mysql sed tr sleep cat kill pt-heartbeat perl'
   echo "$output"
   [ "$status" -eq 0 ]
-  [[ ${lines[1]} == /usr/bin/timeout ]]
-  [[ ${lines[2]} == /usr/bin/mysql ]]
+  # on Wolfi /usr/sbin is a symlink to /usr/bin and comes first in PATH: either spelling is the same file
+  [[ ${lines[1]} == /usr/bin/timeout || ${lines[1]} == /usr/sbin/timeout ]]
+  [[ ${lines[2]} == /usr/bin/mysql || ${lines[2]} == /usr/sbin/mysql ]]
 }
 
 @test "toolkit: DBD::mysql loads and connects over TCP with TLS to a server from the -dev image" {

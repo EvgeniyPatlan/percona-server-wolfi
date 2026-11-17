@@ -46,9 +46,36 @@ accounts:
 
 # Dockerfile: chown -R 1001:1001 /run /etc/haproxy /etc/haproxy/pxc /etc/haproxy-custom (the /etc ones are in the apk).
 # VOLUME ["/etc/haproxy/pxc"] cannot be declared by apko (the directory exists, owned by 1001).
+# apko does not keep non-root owners from the apks: the owners the Dockerfile sets (chown 1001:1001 of the writable
+# dirs, haproxy.cfg, haproxy-global.cfg, check_pxc.sh) are set here; modes as in the apk.
 paths:
   - path: /run
     type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/haproxy/pxc
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/haproxy-custom
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/haproxy/haproxy.cfg
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o644
+  - path: /etc/haproxy/haproxy-global.cfg
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o644
+  - path: /usr/local/bin/check_pxc.sh
+    type: permissions
     uid: 1001
     gid: 1001
     permissions: 0o755

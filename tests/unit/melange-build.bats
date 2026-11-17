@@ -341,6 +341,23 @@ STUB
   done
 }
 
+@test "git mirrors: a recipe URL that only shares a mirror's prefix gets an identity rule and stays on the network" {
+  mkdir -p "$TMP/cache/git/github.com/percona/percona-server.git"
+  printf 'package:\n  name: foo\n  version: @@ps_version@@\n# https://github.com/percona/percona-server-mysql-operator\n# https://github.com/percona/percona-server\n# https://example.invalid/other\n' \
+    > "$TMP/pkgs/foo/melange.yaml.tmpl"
+  run "$ROOT/scripts/melange-build.sh" "${ARGS[@]}"
+  [ "$status" -eq 0 ]
+  f=$(grep -o -- '--env-file [^ ]*' "$TMP/calls" | head -n1 | cut -d' ' -f2)
+  [ -f "$ROOT/$f" ] && f=$ROOT/$f
+  op=https://github.com/percona/percona-server-mysql-operator
+  grep -qx "GIT_CONFIG_KEY_3=url.$op.insteadOf" "$f"
+  grep -qx "GIT_CONFIG_VALUE_3=$op" "$f"
+  grep -qx 'GIT_CONFIG_COUNT=4' "$f"
+  # the mirrored URL itself and unrelated URLs get no identity rule
+  run grep -c 'insteadOf$' "$f"
+  [ "$output" -eq 3 ]
+}
+
 @test "git mirrors: GIT_MIRRORS=0 or --no-cache leave git on the network" {
   mkdir -p "$TMP/cache/git/github.com/percona/percona-server.git"
   GIT_MIRRORS=0 run "$ROOT/scripts/melange-build.sh" "${ARGS[@]}"

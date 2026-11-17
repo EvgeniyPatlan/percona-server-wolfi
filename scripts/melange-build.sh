@@ -145,13 +145,23 @@ if [[ -n ${LEAK_SCAN:-} ]]; then envs+=("LEAK_SCAN=$LEAK_SCAN"); fi
 # protocol.file.allow: git refuses file:// for submodules by default.
 if ((cache)) && [[ ${GIT_MIRRORS:-1} != 0 && -d $cache_dir/git ]]; then
   gitcfg=("protocol.file.allow=always")
+  bases=()
   while IFS= read -r m; do
     rel=${m#"$cache_dir"/git/}
+    bases+=("https://${rel%.git}")
     gitcfg+=("url.file:///var/cache/melange/git/$rel.insteadOf=https://${rel%.git}")
     gitcfg+=("url.file:///var/cache/melange/git/$rel.insteadOf=https://$rel")
   done < <(find "$cache_dir/git" -mindepth 2 -type d -name '*.git' -prune | LC_ALL=C sort)
-  if ((${#gitcfg[@]} > 1)); then
-    log_info "git mirrors: $(((${#gitcfg[@]} - 1) / 2)) repositories from $cache_dir/git"
+  # insteadOf matches URL prefixes: the rule for .../percona-server would also catch .../percona-server-mysql-operator.
+  # Every other URL of the recipe that starts with a mirrored URL gets an identity rule (git applies the longest match),
+  # so it keeps going to the network.
+  while IFS= read -r u; do
+    for b in "${bases[@]}"; do
+      if [[ $u == "$b"* && $u != "$b" && $u != "$b.git" ]]; then gitcfg+=("url.$u.insteadOf=$u"); break; fi
+    done
+  done < <(grep -oE 'https://[A-Za-z0-9._/-]+' "$rendered" | LC_ALL=C sort -u)
+  if ((${#bases[@]})); then
+    log_info "git mirrors: ${#bases[@]} repositories from $cache_dir/git"
     envs+=("GIT_CONFIG_COUNT=${#gitcfg[@]}")
     args+=(--exclude-env-from-recorded-config GIT_CONFIG_COUNT)
     for i in "${!gitcfg[@]}"; do

@@ -193,8 +193,12 @@ cat "$output_path"'
   ps_docker run -d --name "$pull" --network "$net" "${cfg[@]}" -v "$buf:/var/lib/binlogsrv" "$PBS_IMAGE" \
     /usr/bin/binlog_server pull /etc/binlog_server/config/config.json > /dev/null
 
-  # list_s3: the storage as the restore jobs see it
-  list_s3() { pbs_run --network "$net" "${cfg[@]}" -- binlog_server list /etc/binlog_server/config/config.json; }
+  # list_s3: the storage as the restore jobs see it. The S3 backend needs its buffer directory in every command; the
+  # image has none at /var/lib/binlogsrv (neither has the official one): the operator mounts it, here a tmpfs.
+  list_s3() {
+    pbs_run --network "$net" "${cfg[@]}" --tmpfs /var/lib/binlogsrv:uid=1001,gid=0,mode=0775 -- \
+      binlog_server list /etc/binlog_server/config/config.json
+  }
   # wait_gtid <n>: the storage has the source's transactions up to <n>
   wait_gtid() {
     local i out

@@ -48,9 +48,66 @@ accounts:
 # Dockerfile: chown -R 1001:1001 /etc/fluentbit /opt/percona /usr/local/bin (the files are in the apk);
 # chmod 664 /etc/passwd (the entrypoint points the 1001 entry at an arbitrary runtime UID, e.g. OpenShift's, which runs
 # with gid 0). VOLUME ["/etc/fluentbit"] cannot be declared by apko (the directory exists, owned by 1001).
+# apko does not keep non-root owners from the apks: the Dockerfile's chown -R 1001:1001 of /etc/fluentbit, /opt/percona and
+# /usr/local/bin is set here, file by file (modes as in the apk).
 paths:
   - path: /usr/local/bin
     type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/fluentbit
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/fluentbit/custom
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /etc/fluentbit/fluentbit.conf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o644
+  - path: /etc/fluentbit/fluentbit_pxc.conf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o644
+  - path: /etc/fluentbit/parsers_multiline.conf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o644
+  - path: /etc/fluentbit/custom/defaul.conf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o644
+  - path: /opt/percona
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /opt/percona/logrotate
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /opt/percona/logrotate/logrotate-mysql.conf
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o775
+  - path: /usr/local/bin/postrotate-mysql.sh
+    type: permissions
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+  - path: /usr/local/bin/hostname
+    type: permissions
     uid: 1001
     gid: 1001
     permissions: 0o755

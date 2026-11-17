@@ -363,6 +363,23 @@ EOF
   grep -qx "image-percona-server RELOCK=1" "$T/calls"
 }
 
+@test "a lock made from another image config is re-locked; a lock of the current config is kept" {
+  have_apks
+  "$S" > /dev/null 2>&1
+  "$ROOT/scripts/render.sh" "$T/img/percona-server.apko.yaml.tmpl" "$ROOT/versions/9.7.yaml" "$T/cfg.yaml" > /dev/null
+  cur=$(python3 -c 'import base64,hashlib,sys; print(base64.b64encode(hashlib.sha256(open(sys.argv[1],"rb").read()).digest()).decode())' "$T/cfg.yaml")
+  printf '{"config":{"checksum":"sha256-%s"},"contents":{"packages":[]}}\n' "$cur" > "$T/img/percona-server.lock.json"
+  "$S" --images-only percona-server > /dev/null 2>&1
+  run "$S" -n --images-only percona-server
+  [[ $output == *"SKIP  image percona-server (up to date)"* ]]
+  printf '{"config":{"checksum":"sha256-AAAA"},"contents":{"packages":[]}}\n' > "$T/img/percona-server.lock.json"
+  rm -f "$T/calls"
+  run "$S" --images-only percona-server
+  [ "$status" -eq 0 ]
+  [[ $output == *"BUILD image percona-server (lock file stale (image config changed since the lock was made): re-locking)"* ]]
+  grep -qx "image-percona-server RELOCK=1" "$T/calls"
+}
+
 @test "a digest that is not in the registry rebuilds the image; --force rebuilds everything" {
   have_apks
   "$S" > /dev/null 2>&1

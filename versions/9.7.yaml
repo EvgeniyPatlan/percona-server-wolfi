@@ -189,7 +189,7 @@ haproxy_version: "3.4.7"
 haproxy_series: "3.4"
 haproxy_apk_version: "3.4.7-r1"
 # /licenses/LICENSE.haproxy of the official image (same sha256 as the haproxy LICENSE at tag v3.4.0)
-haproxy_license_url: "https://raw.githubusercontent.com/haproxy/haproxy/v3.4.0/LICENSE"
+haproxy_license_uri: "https://raw.githubusercontent.com/haproxy/haproxy/v3.4.0/LICENSE"
 haproxy_license_sha256: "0717ca51fceaa25ac9e5ccc62e0c727dcf27796057201fb5fded56a25ff6ca28"
 official_haproxy_image: "docker.io/percona/haproxy@sha256:d8fbf73f56f34c8f3c4f200ce8fff72d4d4125dec7ac5f7b9073542fc715526b"
 
