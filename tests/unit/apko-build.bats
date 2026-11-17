@@ -4,7 +4,7 @@ setup() {
   ROOT=$(cd "$BATS_TEST_DIRNAME/../.." && pwd)
   TMP=$BATS_TEST_TMPDIR
   mkdir -p "$TMP/img" "$TMP/kd"
-  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router; do
+  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-orchestrator; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -103,6 +103,18 @@ STUB
   [[ $line == *"localhost:5000/percona-mysql-router:9.7 "* ]]
   [[ $line == *"localhost:5000/percona-mysql-router:$v "* ]]
   [[ $line == *"localhost:5000/percona-mysql-router:$v-7"* ]]
+}
+
+@test "orchestrator image is tagged with the orchestrator version in its own repository" {
+  BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" percona-orchestrator
+  [ "$status" -eq 0 ]
+  ov=$(grep '^orc_version:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  v=$ov-$(grep '^orc_release:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  line=$(grep -E -- ' publish ' "$TMP/calls")
+  [[ $line == *"localhost:5000/percona-orchestrator:$ov "* ]]
+  [[ $line == *"localhost:5000/percona-orchestrator:$v "* ]]
+  [[ $line == *"localhost:5000/percona-orchestrator:$v-7"* ]]
+  [[ $line != *"percona-orchestrator:9.7"* ]]
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -262,6 +274,17 @@ mkgit_img() {
   rm -f "$TMP/img/percona-mysql-router.lock.json"
   LOCK_PKGS='{"name":"percona-mysql-router"},{"name":"percona-mysql-shell"},{"name":"percona-mysql-shell-jit"}' \
     run "$ROOT/scripts/apko-build.sh" percona-mysql-router
+  [ "$status" -eq 0 ]
+  # orchestrator: none of the server, router, xtrabackup, mysqlsh or telemetry packages
+  for p in percona-server-libs percona-server-docker-scripts percona-mysql-router percona-mysql-shell \
+    percona-telemetry-agent percona-xtrabackup-docker-scripts; do
+    rm -f "$TMP/img/percona-orchestrator.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-orchestrator
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-orchestrator.lock.json"
+  LOCK_PKGS='{"name":"percona-orchestrator"},{"name":"percona-orchestrator-client"},{"name":"percona-orchestrator-docker-scripts"},{"name":"bash"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-orchestrator
   [ "$status" -eq 0 ]
 }
 

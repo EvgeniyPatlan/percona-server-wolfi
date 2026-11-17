@@ -48,12 +48,13 @@ have_apks() {
 @test "fresh tree: every package and image is planned, a dry run calls nothing" {
   run "$S" -n
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 10 ]
+  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 12 ]
   [[ $output == *"BUILD package percona-server (no $T/repo/x86_64/percona-server-9.7.2.2-r0.apk)"* ]]
   [[ $output == *"BUILD image percona-server (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-server-dev (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-xtrabackup (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-mysql-router (no lock file (first build))"* ]]
+  [[ $output == *"BUILD image percona-orchestrator (no lock file (first build))"* ]]
   [ ! -e "$T/calls" ]
 }
 
@@ -70,16 +71,19 @@ have_apks() {
   [ "${lines[8]}" = "pkg-percona-xtrabackup RELOCK=" ]
   [ "${lines[11]}" = "pkg-percona-xtrabackup-docker-scripts RELOCK=" ]
   [ "${lines[12]}" = "pkg-percona-mysql-router-docker-scripts RELOCK=" ]
-  [ "${lines[13]}" = "registry-up RELOCK=" ]
-  [ "${lines[14]}" = "image-percona-server RELOCK=" ]
-  [ "${lines[15]}" = "image-percona-server-dev RELOCK=" ]
-  [ "${lines[16]}" = "image-percona-xtrabackup RELOCK=" ]
-  [ "${lines[17]}" = "image-percona-mysql-router RELOCK=" ]
+  [ "${lines[13]}" = "pkg-percona-orchestrator RELOCK=" ]
+  [ "${lines[14]}" = "pkg-percona-orchestrator-docker-scripts RELOCK=" ]
+  [ "${lines[15]}" = "registry-up RELOCK=" ]
+  [ "${lines[16]}" = "image-percona-server RELOCK=" ]
+  [ "${lines[17]}" = "image-percona-server-dev RELOCK=" ]
+  [ "${lines[18]}" = "image-percona-xtrabackup RELOCK=" ]
+  [ "${lines[19]}" = "image-percona-mysql-router RELOCK=" ]
+  [ "${lines[20]}" = "image-percona-orchestrator RELOCK=" ]
   [ -s "$T/stamps/pkg-percona-server" ] && [ -s "$T/stamps/image-percona-xtrabackup" ]
   rm "$T/calls"
   run "$S"
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^SKIP' <<< "$output")" -eq 14 ]
+  [ "$(grep -c '^SKIP' <<< "$output")" -eq 17 ]
   run cat "$T/calls"
   [ "$output" = "registry-up RELOCK=" ]
 }
@@ -92,6 +96,8 @@ have_apks() {
   [[ $output == *"SKIP  package mecab (up to date)"* ]]
   [[ $output == *"SKIP  package percona-telemetry-agent (up to date)"* ]]
   [[ $output == *"SKIP  package percona-xtrabackup-docker-scripts (up to date)"* ]]
+  [[ $output == *"SKIP  package percona-orchestrator (up to date)"* ]]
+  [[ $output == *"SKIP  package percona-orchestrator-docker-scripts (up to date)"* ]]
   for p in v8 percona-server percona-mysql-shell percona-xtrabackup percona-server-docker-scripts \
     percona-mysql-router-docker-scripts; do
     [[ $output == *"BUILD package $p (inputs changed)"* ]]
@@ -119,6 +125,7 @@ have_apks() {
   [[ $output == *"BUILD package percona-server-docker-scripts"* ]]
   [[ $output != *"xtrabackup"* ]]
   [[ $output != *"router"* ]]
+  [[ $output != *"orchestrator"* ]]
 }
 
 @test "router only: the server and mysqlsh, no telemetry agent or xtrabackup; its own registry repository" {
@@ -134,6 +141,25 @@ have_apks() {
   run "$S" -n percona-mysql-router
   [[ $output == *"SKIP  image percona-mysql-router (up to date)"* ]]
   grep -q "^http://localhost:5000/v2/percona-mysql-router/manifests/sha256:" "$T/curl.log"
+}
+
+@test "orchestrator only: its two packages, no server build; its own registry repository" {
+  run "$S" -n percona-orchestrator
+  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 2 ]
+  [[ $output == *"BUILD package percona-orchestrator ("* ]]
+  [[ $output == *"BUILD package percona-orchestrator-docker-scripts ("* ]]
+  [[ $output != *"percona-server"* ]]
+  [[ $output != *"image percona-mysql-router"* ]]
+  have_apks
+  "$S" percona-orchestrator > /dev/null 2>&1
+  run "$S" -n percona-orchestrator
+  [[ $output == *"SKIP  image percona-orchestrator (up to date)"* ]]
+  grep -q "^http://localhost:5000/v2/percona-orchestrator/manifests/sha256:" "$T/curl.log"
+  # an orchestrator pin (Go series) rebuilds both of its packages
+  sed 's/^orc_go: .*/orc_go: "1.27"/' "$ROOT/versions/9.7.yaml" > "$T/v.yaml"
+  VERSION_FILE=$T/v.yaml run "$S" -n percona-orchestrator
+  [[ $output == *"BUILD package percona-orchestrator (inputs changed)"* ]]
+  [[ $output == *"BUILD package percona-orchestrator-docker-scripts (inputs changed)"* ]]
 }
 
 @test "xtrabackup only: the server packages it links against, no -dev extras; its own registry repository" {
@@ -173,7 +199,7 @@ EOF
   STUB_CURL_RC=22 run "$S" -n --images-only
   [[ $output == *"BUILD image percona-server (digest not in localhost:5000)"* ]]
   run "$S" -n -f
-  [ "$(grep -c '(--force)' <<< "$output")" -eq 14 ]
+  [ "$(grep -c '(--force)' <<< "$output")" -eq 17 ]
 }
 
 @test "bad arguments are rejected" {

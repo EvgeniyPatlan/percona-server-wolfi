@@ -9,6 +9,7 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
 | `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
 | `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
+| `percona-orchestrator:3.2.6` | Drop-in replacement for the official `percona/percona-orchestrator:3.2.6-25` (Percona Operator for MySQL, async replication): Orchestrator and `orchestrator-client` built from source, the same entrypoint (bash), configuration (SQLite backend, raft) and `add_mysql_nodes.sh`. |
 
 ## Packages
 
@@ -25,6 +26,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
 | `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
 | `percona-mysql-router-docker-scripts` | Entrypoint script of the router image from percona-docker |
+| `percona-orchestrator` | Orchestrator (Go, `percona/orchestrator`) as in the rpm: `/usr/local/orchestrator` (binary, `resources/`, sample configs); subpackage `percona-orchestrator-client` (`/usr/bin/orchestrator-client`) |
+| `percona-orchestrator-docker-scripts` | Entrypoint, `/etc/orchestrator` configuration and `add_mysql_nodes.sh` of the orchestrator image from percona-docker |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -48,6 +51,7 @@ matches the apks (commit the rewritten lock file).
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
     scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
     scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
+    scripts/build.sh percona-orchestrator     # only the orchestrator image (no server build)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 

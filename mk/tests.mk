@@ -46,6 +46,13 @@ ROUTER_IMAGE ?= $(REGISTRY)/percona-mysql-router:9.7
 test-router: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) ROUTER_IMAGE=$(ROUTER_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/router.bats)
 
+# Orchestrator image: version, tools, uid, the shipped configuration with the SQLite backend answering /api/health,
+# orchestrator-client against it, and discovery of a replica pair built from the -dev image (docker only, ~3 min).
+ORC_IMAGE ?= $(REGISTRY)/percona-orchestrator:$(shell source scripts/lib/common.sh; vars_get $(VERSION_FILE) orc_version)
+.PHONY: test-orchestrator
+test-orchestrator: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) ORC_IMAGE=$(ORC_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/orchestrator.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).

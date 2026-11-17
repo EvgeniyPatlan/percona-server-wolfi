@@ -1,0 +1,74 @@
+# percona-orchestrator:@@orc_version@@-@@orc_release@@ - drop-in replacement for the official percona/percona-orchestrator:@@orc_version@@-@@orc_release@@
+# (percona-docker orchestrator/Dockerfile at percona_docker_commit). Built by scripts/apko-build.sh; the package set
+# is pinned by images/percona-orchestrator.lock.json. Differences: docs/deviations.md ("orchestrator" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # entrypoint.sh (bash after the Wolfi patch), the Percona Operator's orc-entrypoint.sh and orc-add_mysql_nodes.sh
+    # (bash, jq, curl, sed, mktemp, seq, date); ProcessesShellCommand "sh" runs the failover hooks (busybox sh)
+    - busybox
+    - bash
+    - coreutils
+    - findutils
+    - jq
+    - curl
+    - ca-certificates-bundle
+    # Dockerfile: which tar openssl procps-ng bind-utils (which: busybox)
+    - gnutar
+    - openssl
+    - procps
+    - bind-tools
+    # orchestrator-client -c help formats its command list with `column` (util-linux in the official image)
+    - util-linux-misc
+    # Dockerfile: percona-orchestrator percona-orchestrator-client
+    - percona-orchestrator
+    - percona-orchestrator-client
+    - percona-orchestrator-docker-scripts
+
+# Dockerfile: groupadd -g 1001 mysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -c "Default Application User" mysql
+# (no -m: no home directory)
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: mkdir -p /etc/orchestrator /var/lib/orchestrator; chown -R 1001:1001 both, then COPY dockerdir / (which
+# leaves /etc/orchestrator root:root 0755; the two configuration files are chowned to 1001 by the scripts package).
+# VOLUME ["/var/lib/orchestrator"] and EXPOSE 3000 10008 cannot be declared by apko (the directory exists, owned by 1001).
+paths:
+  - path: /var/lib/orchestrator
+    type: directory
+    uid: 1001
+    gid: 1001
+    permissions: 0o755
+
+entrypoint:
+  command: /entrypoint.sh
+cmd: /usr/local/orchestrator/orchestrator -config /etc/orchestrator/orchestrator.conf.json http
+work-dir: /usr/local/orchestrator
+
+# Dockerfile ENV: only PATH (and container=oci from the buildah build)
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # official images: set by their buildah build; tools use it to detect a container (compat parity)
+  container: oci
+
+annotations:
+  org.opencontainers.image.title: percona-orchestrator
+  org.opencontainers.image.description: Percona Orchestrator @@orc_version@@-@@orc_release@@ from source on Wolfi (drop-in for percona/percona-orchestrator:@@orc_version@@-@@orc_release@@). Not an official Percona image.
+  org.opencontainers.image.version: "@@orc_version@@-@@orc_release@@"
+  org.opencontainers.image.licenses: Apache-2.0
+
+archs:
+  - x86_64

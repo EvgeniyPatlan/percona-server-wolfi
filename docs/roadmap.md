@@ -8,8 +8,8 @@ Wolfi itself ships `percona-server-8.4` (8.4.2), `percona-server-9.1`, `percona-
 3.0.9. All but ProxySQL are far behind 9.7, so they are not a base for this work.
 
 Done in this repository: Percona Server 9.7 (`percona-server`, plus `v8`, `mecab`, `mecab-ipadic`), MySQL Shell,
-the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); images `percona-server:9.7`,
-`percona-server:9.7-dev`, `percona-xtrabackup:9.7` and `percona-mysql-router:9.7`.
+the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); Orchestrator 3.2.6 (item 3); images `percona-server:9.7`,
+`percona-server:9.7-dev`, `percona-xtrabackup:9.7`, `percona-mysql-router:9.7` and `percona-orchestrator:3.2.6`.
 
 ## Components to create
 
@@ -19,7 +19,7 @@ Effort is a rough estimate (S, M, L).
 |---|---|---|---|---|---|---|
 | 1 | ~~Percona XtraBackup 9.7~~ **done** | PS operator backups, PXC | `percona-xtrabackup`, `percona-xtrabackup-docker-scripts` | `percona-xtrabackup:9.7` (no garbd, no AWS/Azure CLIs: not used by the PS operator) | 8.4.0 only | S |
 | 2 | ~~MySQL Router 9.7~~ **done** | PS operator (group replication routing) | `percona-mysql-router`, a subpackage of the `percona-server` recipe (same source tree), and `percona-mysql-router-docker-scripts` | `percona-mysql-router:9.7` (router, mysqlsh with the jit library by owner ruling, entrypoint) | none | S-M |
-| 3 | Orchestrator | PS operator (async replication) | `percona-orchestrator`, `percona-orchestrator-client` (Go, `percona/orchestrator`) | `percona-orchestrator` | none | M |
+| 3 | ~~Orchestrator~~ **done** | PS operator (async replication) | `percona-orchestrator`, `percona-orchestrator-client` (Go, `percona/orchestrator`), `percona-orchestrator-docker-scripts` | `percona-orchestrator:3.2.6` | none | M |
 | 4 | HAProxy, operator flavour | PS and PXC operators | Wolfi `haproxy-3.x` instead of Percona's `percona-haproxy` rpm, plus the operator check scripts | `haproxy` | haproxy 3.2/3.3 | S |
 | 5 | Percona Toolkit | PS and PXC operators (toolkit image, pt-heartbeat, ...) | `percona-toolkit` (Perl) and `perl-DBD-mysql` against `percona-server-libs` | `percona-toolkit` | neither | M |
 | 6 | Percona Binlog Server | PS operator (binlog storage, PITR) | `percona-binlog-server` (C++, 0.x) | `percona-binlog-server` | none | M |
