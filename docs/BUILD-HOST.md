@@ -613,6 +613,26 @@ call (`python3`, `curl`, `mysqlrouter_passwd`), the entrypoint refusing to start
 against a three-member InnoDB Cluster (built with the -dev image, `tests/image/gr-lib.bash` `gr_cluster`): 6446
 reaches the primary, 6447 a secondary, a write through 6446 is read through 6447, 6447 refuses writes.
 
+## Percona Binlog Server (`percona-binlog-server`, `make test-binlog-server`)
+
+`packages/percona-binlog-server` follows the RPM spec of `pbs_tag` (release build only): Boost `pbs_boost_version`
+(the boostorg CMake tarball `pbs_boost_url`, fetched by `make sources`) and the AWS SDK for C++ `pbs_aws_sdk_tag`
+(git with its crt submodules, mirrored by `make git-mirrors`) are built static with the presets the spec uses, then
+`binlog_server` with GCC 14 against `percona-server-dev`; the project's unit tests (`ctest`) run in the build. The
+build fails unless the binary reports `pbs_version`, links the client library with RPATH `/usr/lib/mysql`, and has no
+libcurl/Boost/AWS shared dependency. Its `melange test` (`tests/smoke.sh`) checks version and usage, parses the
+shipped `main_config.json` (`list`), and fetches over TLS from a throwaway mysqld with GTID binary logs into a local
+directory (`list`, `search_by_gtid_set` on the result). About 15 minutes; the SDK is the longest part.
+
+    make pkg-percona-binlog-server pkg-percona-binlog-server-docker-scripts
+    make test-binlog-server IMAGE=localhost:5000/percona-server:9.7-dev PBS_IMAGE=localhost:5000/percona-binlog-server:0.4 report
+
+`tests/image/binlog-server.bats` (4 tests, about 5 minutes, docker only): version, usage, user 1001/group 0, the
+Dockerfile's directories and the shipped config; a CA bundle mounted at the RHEL path the operator uses replaces the
+trusted bundle; `fetch` from a -dev server (GTID, replication user, TLS required) into a directory storage, `list` and
+the operator's `/bin/sh -c` search form; `pull` into MinIO (S3 backend, as the operator configures it) picking up new
+transactions, then a stop on SIGTERM.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime

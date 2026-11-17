@@ -8,8 +8,8 @@ Wolfi itself ships `percona-server-8.4` (8.4.2), `percona-server-9.1`, `percona-
 3.0.9. All but ProxySQL are far behind 9.7, so they are not a base for this work.
 
 Done in this repository: Percona Server 9.7 (`percona-server`, plus `v8`, `mecab`, `mecab-ipadic`), MySQL Shell,
-the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); images `percona-server:9.7`,
-`percona-server:9.7-dev`, `percona-xtrabackup:9.7` and `percona-mysql-router:9.7`.
+the telemetry agent and the docker scripts; Percona XtraBackup 9.7 (item 1); MySQL Router 9.7 (item 2); Percona Binlog Server 0.4.1 (item 6); images `percona-server:9.7`,
+`percona-server:9.7-dev`, `percona-xtrabackup:9.7`, `percona-mysql-router:9.7` and `percona-binlog-server:0.4`.
 
 ## Components to create
 
@@ -22,7 +22,7 @@ Effort is a rough estimate (S, M, L).
 | 3 | Orchestrator | PS operator (async replication) | `percona-orchestrator`, `percona-orchestrator-client` (Go, `percona/orchestrator`) | `percona-orchestrator` | none | M |
 | 4 | HAProxy, operator flavour | PS and PXC operators | Wolfi `haproxy-3.x` instead of Percona's `percona-haproxy` rpm, plus the operator check scripts | `haproxy` | haproxy 3.2/3.3 | S |
 | 5 | Percona Toolkit | PS and PXC operators (toolkit image, pt-heartbeat, ...) | `percona-toolkit` (Perl) and `perl-DBD-mysql` against `percona-server-libs` | `percona-toolkit` | neither | M |
-| 6 | Percona Binlog Server | PS operator (binlog storage, PITR) | `percona-binlog-server` (C++, 0.x) | `percona-binlog-server` | none | M |
+| 6 | ~~Percona Binlog Server~~ **done** | PS operator (binlog storage, PITR) | `percona-binlog-server` (C++, 0.4.1, with Boost 1.90 and the AWS SDK 1.11.774 static), `percona-binlog-server-docker-scripts` | `percona-binlog-server:0.4` | none | M |
 | 7 | Log collector | both operators | Wolfi `fluent-bit` and `supercronic`, PS client, logrotate | `fluentbit` (logcollector) | fluent-bit, supercronic | S |
 | 8 | Operator binaries | both operators | `percona-server-mysql-operator`, `percona-xtradb-cluster-operator` (Go) | operator images | none (only the MongoDB operator) | S each |
 | 9 | Percona XtraDB Cluster 9.7 | PXC operator | `percona-xtradb-cluster` with Galera (`galera`, `garbd`) | `percona-xtradb-cluster:9.7`, `-backup` | none | L |

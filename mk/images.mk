@@ -1,7 +1,7 @@
 # Images (apko) and the local registry. scripts/apko-build.sh renders, locks (images/<name>.lock.json, committed),
 # builds (out/images/<name>/: image.tar + sbom-*.spdx.json) and publishes to $(REGISTRY); the index digest goes to
 # out/results/<name>.digest.
-IMAGES := percona-server percona-server-dev percona-xtrabackup percona-mysql-router
+IMAGES := percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-binlog-server
 REGISTRY ?= localhost:5000
 REGISTRY_NAME ?= ps-wolfi-registry
 REGISTRY_PORT ?= 5000

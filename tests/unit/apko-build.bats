@@ -4,7 +4,7 @@ setup() {
   ROOT=$(cd "$BATS_TEST_DIRNAME/../.." && pwd)
   TMP=$BATS_TEST_TMPDIR
   mkdir -p "$TMP/img" "$TMP/kd"
-  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router; do
+  for n in percona-server percona-server-dev percona-xtrabackup percona-mysql-router percona-binlog-server; do
     printf 'contents:\n  packages:\n    - percona-server-server=@@ps_version@@\n' > "$TMP/img/$n.apko.yaml.tmpl"
   done
   touch "$TMP/kd/ps-wolfi-dev.rsa.pub"
@@ -103,6 +103,18 @@ STUB
   [[ $line == *"localhost:5000/percona-mysql-router:9.7 "* ]]
   [[ $line == *"localhost:5000/percona-mysql-router:$v "* ]]
   [[ $line == *"localhost:5000/percona-mysql-router:$v-7"* ]]
+}
+
+@test "binlog server image is tagged with its own version series in its own repository" {
+  BUILD_ID=7 run "$ROOT/scripts/apko-build.sh" percona-binlog-server
+  [ "$status" -eq 0 ]
+  pv=$(grep '^pbs_version:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  v=$pv-$(grep '^pbs_release:' "$ROOT/versions/9.7.yaml" | cut -d'"' -f2)
+  line=$(grep -E -- ' publish ' "$TMP/calls")
+  [[ $line == *"localhost:5000/percona-binlog-server:${pv%.*} "* ]]
+  [[ $line == *"localhost:5000/percona-binlog-server:$v "* ]]
+  [[ $line == *"localhost:5000/percona-binlog-server:$v-7"* ]]
+  [[ $line != *":9.7"* ]]
 }
 
 @test "reproducible inputs: build date from source_date_epoch, no VCS autodetect, revision annotation" {
@@ -262,6 +274,17 @@ mkgit_img() {
   rm -f "$TMP/img/percona-mysql-router.lock.json"
   LOCK_PKGS='{"name":"percona-mysql-router"},{"name":"percona-mysql-shell"},{"name":"percona-mysql-shell-jit"}' \
     run "$ROOT/scripts/apko-build.sh" percona-mysql-router
+  [ "$status" -eq 0 ]
+  # binlog server: the client library only; no server, mysqlsh, telemetry agent, router or other image's scripts
+  for p in percona-server-server percona-mysql-shell percona-telemetry-agent percona-mysql-router \
+    percona-server-docker-scripts percona-xtrabackup-docker-scripts; do
+    rm -f "$TMP/img/percona-binlog-server.lock.json"
+    LOCK_PKGS="{\"name\":\"$p\"}" run "$ROOT/scripts/apko-build.sh" percona-binlog-server
+    [ "$status" -ne 0 ]
+  done
+  rm -f "$TMP/img/percona-binlog-server.lock.json"
+  LOCK_PKGS='{"name":"percona-binlog-server"},{"name":"percona-binlog-server-docker-scripts"},{"name":"percona-server-libs"},{"name":"bash"}' \
+    run "$ROOT/scripts/apko-build.sh" percona-binlog-server
   [ "$status" -eq 0 ]
 }
 

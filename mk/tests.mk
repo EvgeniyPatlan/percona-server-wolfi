@@ -46,6 +46,13 @@ ROUTER_IMAGE ?= $(REGISTRY)/percona-mysql-router:9.7
 test-router: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) ROUTER_IMAGE=$(ROUTER_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/router.bats)
 
+# Binlog Server image: version and usage, the shipped config, the operator's CA bundle path, fetch and pull from a -dev
+# server with GTID binary logs into a local directory storage and into MinIO (S3), as the operator runs it (~5 min).
+PBS_IMAGE ?= $(REGISTRY)/percona-binlog-server:0.4
+.PHONY: test-binlog-server
+test-binlog-server: $(BATS)
+	$(call logged, IMAGE=$(IMAGE) PBS_IMAGE=$(PBS_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/binlog-server.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).

@@ -1,7 +1,7 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
-Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9.7 from source as Wolfi apk packages
-(melange) and assembles four container images from them (apko). Not an official Percona image.
+Builds Percona Server for MySQL 9.7 (with MySQL Router), Percona XtraBackup 9.7 and Percona Binlog Server from source as
+Wolfi apk packages (melange) and assembles container images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
@@ -9,6 +9,7 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
 | `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
 | `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
+| `percona-binlog-server:0.4` | Drop-in replacement for `perconalab/percona-binlog-server:0.4.1`, the image the Percona Operator for MySQL uses for binlog storage and point-in-time recovery: `binlog_server` 0.4.1 streaming binary logs to a local directory or S3. |
 
 ## Packages
 
@@ -25,6 +26,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
 | `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
 | `percona-mysql-router-docker-scripts` | Entrypoint script of the router image from percona-docker |
+| `percona-binlog-server` | Percona Binlog Server (`binlog_server`), with Boost and the AWS SDK for C++ built in statically; subpackage `-dbg` |
+| `percona-binlog-server-docker-scripts` | percona-docker's LICENSE for the binlog server image and the RHEL CA bundle path the operator mounts |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -44,10 +47,11 @@ template or lock file changed or its digest is not in the registry. It re-locks 
 matches the apks (commit the rewritten lock file).
 
     scripts/build.sh -n                       # show the plan: BUILD/SKIP for each package and image, with the reason
-    scripts/build.sh                          # build what is needed for all four images
+    scripts/build.sh                          # build what is needed for all the images
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
     scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
     scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
+    scripts/build.sh percona-binlog-server    # only the binlog server image (and the server packages it links)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -195,6 +199,21 @@ With a cluster on the docker network `db` (members reachable by name, `n1` one o
 
 The image also has MySQL Shell (`docker exec -it router mysqlsh`), `python3` and `curl`, which the Percona Operator's
 router scripts use. A cluster can be created from the `:9.7-dev` image with `mysqlsh` (`dba.createCluster`).
+
+### `percona-binlog-server:0.4`: Percona Binlog Server
+
+    PBS=localhost:5000/percona-binlog-server:0.4
+
+No entrypoint (CMD is `bash`, as in the official image); the operator runs `binlog_server pull <config.json>`.
+`binlog_server` reads a JSON configuration (`/etc/percona-binlog-server/main_config.json` is the upstream example):
+the source server and a user with `REPLICATION SLAVE`, GTID replication, and a storage, `file:///<dir>` or S3
+(`s3://key:secret@bucket.region/prefix`, or `http[s]://key:secret@host:port/bucket/prefix` for MinIO and others).
+With a GTID-enabled server `ps` on the docker network `db` and a config in `./pbs.json`:
+
+    docker run -d --name pbs --network db -v $PWD/pbs.json:/etc/binlog_server/config.json:ro \
+      -v pbs-data:/var/lib/binlog-server/data $PBS binlog_server pull /etc/binlog_server/config.json
+    docker run --rm -v $PWD/pbs.json:/etc/binlog_server/config.json:ro -v pbs-data:/var/lib/binlog-server/data \
+      $PBS binlog_server list /etc/binlog_server/config.json
 
 ## Official image vs this build
 

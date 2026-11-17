@@ -1,0 +1,8 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "urn:ps-wolfi:vex:percona-binlog-server",
+  "author": "project owner",
+  "timestamp": "2026-11-17T00:00:00Z",
+  "version": 1,
+  "statements": []
+}

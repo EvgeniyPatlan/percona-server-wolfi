@@ -13,7 +13,9 @@ git-mirrors:
 	  scripts/git-mirror.sh https://github.com/percona/percona-server "$$(v ps_tag)" "$$(v ps_commit)" \
 	    $(if $(PS_SEED),--seed "$(PS_SEED)") && \
 	  scripts/git-mirror.sh https://github.com/percona/percona-xtrabackup "$$(v pxb_tag)" "$$(v pxb_commit)" \
-	    $(if $(PXB_SEED),--seed "$(PXB_SEED)"))
+	    $(if $(PXB_SEED),--seed "$(PXB_SEED)") && \
+	  scripts/git-mirror.sh https://github.com/Percona-Lab/percona-binlog-server "$$(v pbs_tag)" "$$(v pbs_commit)" && \
+	  scripts/git-mirror.sh https://github.com/aws/aws-sdk-cpp "$$(v pbs_aws_sdk_tag)" "$$(v pbs_aws_sdk_commit)")
 
 # Vendor the V8 source tree (depot_tools, several GB, network) into sources/v8-<v8_tag>.tar.gz and print
 # the v8_src_sha256 line to paste into $(VERSION_FILE). When the tarball already exists it is only hashed (no fetch;
