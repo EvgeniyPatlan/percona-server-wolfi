@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sign.sh <sign|verify> <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator|percona-server-mysql-operator|percona-xtradb-cluster-operator|percona-proxysql3>
+# sign.sh <sign|verify> <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|percona-haproxy|percona-fluentbit|percona-orchestrator|percona-server-mysql-operator|percona-xtradb-cluster-operator|percona-proxysql3|percona-xtradb-cluster|percona-xtradb-cluster-backup>
 # sign:   cosign sign + cosign attest --type spdxjson (the apko SBOM) of the published index digest
 #         (out/results/<name>.digest, $REGISTRY/<repo>@<digest>), key $KEY_DIR/cosign.key (COSIGN_PASSWORD from env).
 # verify: cosign verify + verify-attestation with $KEY_DIR/cosign.pub.
@@ -24,6 +24,7 @@ case $name in
   percona-orchestrator) repo=percona-orchestrator ;;
   percona-server-mysql-operator | percona-xtradb-cluster-operator) repo=$name ;;
   percona-proxysql3) repo=percona-proxysql3 ;;
+  percona-xtradb-cluster | percona-xtradb-cluster-backup) repo=$name ;;
   *) die "unknown image: $name" ;;
 esac
 case $mode in sign | verify) ;; *) die "unknown mode: $mode (sign|verify)" ;; esac

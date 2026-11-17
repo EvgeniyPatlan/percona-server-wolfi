@@ -85,6 +85,16 @@ PROXYSQL_IMAGE ?= $(REGISTRY)/percona-proxysql3:3.0
 test-proxysql: $(BATS)
 	$(call logged, IMAGE=$(IMAGE) PROXYSQL_IMAGE=$(PROXYSQL_IMAGE) DOCKER="$(DOCKER)" $(RUN_BATS) tests/image/proxysql.bats)
 
+# Percona XtraDB Cluster images: single-node bootstrap through the entrypoint, a three-node cluster on a docker network
+# (SST by xtrabackup), a write replicated to every node, garbd from the backup image joining as an arbitrator, and
+# garbd in the XtraBackup image (docker only, no network access, ~10 min).
+PXC_IMAGE ?= $(REGISTRY)/percona-xtradb-cluster:9.7
+PXC_BACKUP_IMAGE ?= $(REGISTRY)/percona-xtradb-cluster-backup:9.7
+.PHONY: test-pxc
+test-pxc: $(BATS)
+	$(call logged, PXC_IMAGE=$(PXC_IMAGE) PXC_BACKUP_IMAGE=$(PXC_BACKUP_IMAGE) PXB_IMAGE=$(PXB_IMAGE) DOCKER="$(DOCKER)" \
+	  $(RUN_BATS) tests/image/pxc.bats)
+
 # Nightly MTR: percona-server-test from out/repo, run in a container built from wolfi_sdk (versions/tools.yaml) with the
 # local repo and its public key (APK_PUBKEY). Results: out/results/mtr-<suite>.txt; exit 1 on any failed test that is not
 # in tests/mtr/skip-<suite>.txt (lines "<test> <reason>"). The var dir is a tmpfs (MTR_TMPFS_SIZE).

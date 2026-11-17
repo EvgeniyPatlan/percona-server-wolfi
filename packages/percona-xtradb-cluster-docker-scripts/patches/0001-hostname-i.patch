@@ -1,0 +1,48 @@
+Wolfi deviation 1 of 2 (docs/deviations.md, "PXC entrypoint hostname -I"): the EL9 image's `hostname` (the
+hostname package) prints every address of the host with -I. Wolfi has no such hostname: busybox's applet and the
+net-tools one know -i (the addresses the host name resolves to) but not -I. In a container (docker and Kubernetes
+both write "<ip> <hostname>" into /etc/hosts) -i prints the container address, which is what the scripts take
+(the first field). Same change in the three scripts that call it.
+
+--- a/percona-xtradb-cluster-9.x/dockerdir/entrypoint.sh	2026-11-17 09:33:16.338888944 +0200
++++ b/percona-xtradb-cluster-9.x/dockerdir/entrypoint.sh	2026-11-17 09:33:16.346888937 +0200
+@@ -121,7 +121,7 @@
+ 	echo "Cluster address set to: $CLUSTER_JOIN"
+ elif [ -n "$DISCOVERY_SERVICE" ]; then
+ 	echo 'Registering in the discovery service'
+-	NODE_IP=$(hostname -I | awk ' { print $1 } ')
++	NODE_IP=$(hostname -i | awk ' { print $1 } ')
+ 
+ 	if [ "${DISCOVERY_SERVICE:0:4}" != "http" ]; then
+ 		DISCOVERY_SERVICE="http://${DISCOVERY_SERVICE}"
+@@ -154,7 +154,7 @@
+ 
+ else
+ 	: checking incoming cluster parameters
+-	NODE_IP=$(hostname -I | awk ' { print $1 } ')
++	NODE_IP=$(hostname -i | awk ' { print $1 } ')
+ 	sed -r "s|^[#]?wsrep_node_address=.*$|wsrep_node_address=${NODE_IP}|" "${CFG}" 1<> "${CFG}"
+ 	sed -r "s|^[#]?wsrep_node_incoming_address=.*$|wsrep_node_incoming_address=${NODE_NAME}:${NODE_PORT}|" "${CFG}" 1<> "${CFG}"
+ 
+--- a/percona-xtradb-cluster-9.x/dockerdir/usr/bin/configure-pxc.sh	2026-11-17 09:33:16.338888944 +0200
++++ b/percona-xtradb-cluster-9.x/dockerdir/usr/bin/configure-pxc.sh	2026-11-17 09:33:16.348888935 +0200
+@@ -29,7 +29,7 @@
+     local IFS="$1"; shift; echo "$*";
+ }
+ 
+-NODE_IP=$(hostname -I | awk ' { print $1 } ')
++NODE_IP=$(hostname -i | awk ' { print $1 } ')
+ CLUSTER_NAME="$(hostname -f | cut -d'.' -f2)"
+ SERVER_ID=${HOSTNAME/$CLUSTER_NAME-}
+ NODE_NAME=$(hostname -f)
+--- a/percona-xtradb-cluster-9.x/dockerdir/usr/bin/clustercheckcron	2026-11-17 09:33:16.338888944 +0200
++++ b/percona-xtradb-cluster-9.x/dockerdir/usr/bin/clustercheckcron	2026-11-17 09:33:16.350888933 +0200
+@@ -43,7 +43,7 @@
+     MYSQL_CMDLINE="mysql -nNE --connect-timeout=$TIMEOUT ${EXTRA_ARGS}"
+ fi
+ 
+-ipaddr=$(hostname -I | awk ' { print $1 } ')
++ipaddr=$(hostname -i | awk ' { print $1 } ')
+ hostname=$(hostname)
+ 
+ while true

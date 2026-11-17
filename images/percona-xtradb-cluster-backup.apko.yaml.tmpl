@@ -1,0 +1,86 @@
+# percona-xtradb-cluster-backup:@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@ - drop-in replacement for the backup image
+# of the PXC operator (percona-docker percona-xtradb-cluster-9.x-backup/Dockerfile at percona_docker_commit; published as
+# perconalab/percona-xtradb-cluster-operator:9.7.2-pxc8.7-backup, official_pxc_backup_image). garbd joins the cluster
+# as an arbitrator and receives the SST (xtrabackup stream) of a donor; run_backup.sh stores it (PVC, S3, GCS, Azure).
+# Built by scripts/apko-build.sh; differences: docs/deviations.md ("PXC backup" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    - busybox
+    - bash
+    - coreutils
+    - findutils
+    # Dockerfile: shadow-utils hostname libaio iproute tar cracklib-dicts openssl numactl-libs jq socat iputils
+    # procps-ng util-linux unzip findutils, libev, pv, boost-program-options (garbd), AWS CLI v2
+    - iproute2
+    - gnutar
+    - openssl
+    - jq
+    - socat
+    - iputils
+    - procps
+    - util-linux-misc
+    - unzip
+    - pv
+    - curl
+    - ca-certificates-bundle
+    # lib/pxc/aws.sh (S3 object checks and deletes) calls the AWS CLI
+    - aws-cli-2
+    # Dockerfile: percona-xtrabackup-97, percona-server-shared, percona-xtradb-cluster-garbd, -client (the client
+    # library here is percona-xtradb-cluster-libs, the same libperconaserverclient as percona-server-shared)
+    - percona-xtrabackup
+    - percona-xtradb-cluster-garbd
+    - percona-xtradb-cluster-client
+    - percona-xtradb-cluster-libs
+    # lib/pxc, backup.sh, run_backup.sh, recovery-*.sh, get-pxc-state, /backup
+    - percona-xtradb-cluster-backup-scripts
+
+# Dockerfile: groupadd -g 1001 mysql; useradd -u 1001 -r -g 1001 -s /sbin/nologin -c "Default Application User" mysql
+accounts:
+  groups:
+    - groupname: mysql
+      gid: 1001
+  users:
+    - username: mysql
+      uid: 1001
+      gid: 1001
+      homedir: /home/mysql
+      shell: /sbin/nologin
+  run-as: "1001"
+
+# Dockerfile: install -d -o 1001 -g 0 -m 0775 /backup (also in the apk; apko applies the owner)
+paths:
+  - path: /backup
+    type: directory
+    uid: 1001
+    gid: 0
+    permissions: 0o775
+
+# Dockerfile: no ENTRYPOINT; CMD ["sleep","infinity"] (the operator runs backup.sh / recovery-*.sh as the command)
+cmd: sleep infinity
+work-dir: /
+
+# Dockerfile ENV; version values are ours. PXC_REPO is the rpm repository of the build and is not set.
+environment:
+  PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  container: oci
+  PXB_VERSION: "@@pxb_version@@-@@pxb_release@@"
+  PS_VERSION: "@@ps_version@@-@@ps_release@@"
+  PXC_VERSION: "@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@"
+  OS_VER: wolfi
+  FULL_PERCONA_VERSION: "@@ps_version@@-@@ps_release@@.wolfi"
+  FULL_PERCONA_XTRABACKUP_VERSION: "@@pxb_version@@-@@pxb_release@@.wolfi"
+  FULL_PERCONA_XTRADBCLUSTER_VERSION: "@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@.wolfi"
+
+annotations:
+  org.opencontainers.image.title: percona-xtradb-cluster-backup
+  org.opencontainers.image.description: Backup image of the PXC operator (garbd @@galera_version@@, XtraBackup @@pxb_version@@-@@pxb_release@@, PXC @@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@ client) built from source on Wolfi. Not an official Percona image.
+  org.opencontainers.image.version: "@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@"
+  org.opencontainers.image.licenses: GPL-2.0-only
+
+archs:
+  - x86_64

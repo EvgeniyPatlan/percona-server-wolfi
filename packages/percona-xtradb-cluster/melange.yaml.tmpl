@@ -1,0 +1,582 @@
+package:
+  name: percona-xtradb-cluster
+  # apk versions cannot contain "-": 9.7.2-2.1 becomes 9.7.2.2.1 (same convention as percona-server)
+  version: "@@pxc_version@@.@@pxc_release@@.@@pxc_rpm_release@@"
+  epoch: 0
+  description: Percona XtraDB Cluster @@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@ (meta package; the server is percona-xtradb-cluster-server)
+  copyright:
+    - license: GPL-2.0-only
+  # The main package ships no files: every installed file is moved into a subpackage below (-server is the
+  # catch-all and runs last). Installing "percona-xtradb-cluster" pulls in the server and the client (RPM meta package).
+  dependencies:
+    runtime:
+      - percona-xtradb-cluster-server
+      - percona-xtradb-cluster-client
+
+# Build flags follow Percona's RPM build (build-ps/percona-xtradb-cluster.spec @ pxc_tag, %build cmake_common_flags,
+# release build), because the official percona/percona-xtradb-cluster image is built from those rpms; file placement
+# follows the spec's %files. Differences (docs/deviations.md, "PXC" rows): OpenSSL 3.6 headers and bundled curl (same
+# OpenSSL ruling as percona-server), system MeCab, no PGO profile run, no mysqld-debug build, no MySQL Router (Percona
+# Server's percona-mysql-router is the router of this repository), hardening flags R7 instead of RPM_OPT_FLAGS.
+# Galera (libgalera_smm.so, garbd) is not built separately: PXC's CMakeLists adds the percona-xtradb-cluster-galera
+# and wsrep-lib submodules (ADD_SUBDIRECTORY), so one CMake/Ninja build makes the server, the provider and garbd, as
+# in the RPM (the spec's scons lines are commented out). Wolfi has merged /usr (see percona-server): configured with
+# the RPM paths, the tree is moved to /usr/bin and /usr/lib before packaging.
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - linux-headers
+      - cmake
+      - ninja-build
+      - ccache
+      - bison
+      - perl
+      - pkgconf
+      - patch
+      - git
+      # system libraries (RPM BuildRequires; same set as percona-server)
+      - openssl-dev~3.6   # MySQL 9.7 supports OpenSSL 1.1/3.x; Wolfi openssl-dev is 4.0 (docs/deviations.md)
+      - zlib-dev
+      - openldap-dev
+      - cyrus-sasl-mit-dev
+      - krb5-dev
+      - linux-pam-dev
+      - numactl-dev
+      - libaio-dev
+      - libtirpc-dev
+      - rpcsvc-proto
+      - ncurses-dev
+      # bundled libfido2 (WITH_FIDO=bundled) needs libudev on Linux
+      - libudev-dev
+      # Galera (RPM BuildRequires: boost-devel check-devel): garbd links Boost.Program_options (galera
+      # cmake/boost.cmake, find_package), and galera's CMake requires the Check unit test library to configure
+      - boost-dev
+      - check-dev
+      # from the local repo (packages/mecab): the RPM passes -DWITH_MECAB=<mecab prefix>
+      - mecab
+      - mecab-dev
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/percona/percona-xtradb-cluster
+      tag: "@@pxc_tag@@"
+      expected-commit: "@@pxc_commit@@"
+      recurse-submodules: true
+      destination: pxc-src
+
+  - name: Check source versions and submodule pins, apply patches
+    runs: |
+      export LC_ALL=C
+      export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
+      # MYSQL_VERSION at the pinned commit is the version this recipe is named after
+      v=$(awk -F= '/^MYSQL_VERSION_(MAJOR|MINOR|PATCH)=/ { printf "%s%s", sep, $2; sep = "." }' pxc-src/MYSQL_VERSION)
+      e=$(sed -n 's/^MYSQL_VERSION_EXTRA=//p' pxc-src/MYSQL_VERSION)
+      test "$v$e" = "@@pxc_version@@-@@pxc_release@@" ||
+        { echo "pxc-src/MYSQL_VERSION is $v$e, expected @@pxc_version@@-@@pxc_release@@" >&2; exit 1; }
+      # every submodule is at the pinned commit (the superproject's gitlinks already fix them; checked explicitly so a
+      # pin change in versions/9.7.yaml cannot silently disagree with the tree)
+      pin() {
+        got=$(git -C "pxc-src/$1" rev-parse HEAD)
+        test "$got" = "$2" || { echo "pxc-src/$1 is at $got, expected $2" >&2; exit 1; }
+        echo "ok: $1 @ $2"
+      }
+      pin percona-xtradb-cluster-galera @@galera_commit@@
+      pin percona-xtradb-cluster-galera/wsrep/src @@wsrep_api_commit@@
+      pin wsrep-lib @@wsrep_lib_commit@@
+      pin wsrep-lib/wsrep-API/v26 @@wsrep_api_commit@@
+      g=pxc-src/percona-xtradb-cluster-galera/GALERA_VERSION
+      gv=$(sed -n 's/^GALERA_VERSION_MAJOR=//p' "$g").$(sed -n 's/^GALERA_VERSION_MINOR=//p' "$g")$(sed -n 's/^GALERA_VERSION_EXTRA=//p' "$g")
+      test "$gv" = "@@galera_version@@" || { echo "$g is $gv, expected @@galera_version@@" >&2; exit 1; }
+      # WSREP version of the COMPILATION_COMMENT, computed as pxc_builder.sh does
+      w=$(grep WSREP_INTERFACE_VERSION pxc-src/wsrep-lib/wsrep-API/v26/wsrep_api.h | head -n1 | cut -d '"' -f2)
+      w=$w.$(grep 'SET(WSREP_PATCH_VERSION' pxc-src/cmake/wsrep-lib.cmake | cut -d '"' -f2)
+      test "$w" = "@@pxc_wsrep_version@@" || { echo "WSREP version is $w, expected @@pxc_wsrep_version@@" >&2; exit 1; }
+      # Boost is in-tree (no download)
+      test -d pxc-src/extra/boost/boost_1_87_0
+      # RPM %prep (rhel 9): make sure coredumper's thread lister declares getpid
+      grep -q unistd.h pxc-src/extra/coredumper/src/thread_lister.c ||
+        sed -i '1i #include <unistd.h>' pxc-src/extra/coredumper/src/thread_lister.c
+      n=0
+      for p in patches/*.patch; do
+        [ -e "$p" ] || continue
+        echo "applying $p"
+        patch -d pxc-src -p1 --forward --no-backup-if-mismatch < "$p"
+        n=$((n + 1))
+      done
+      echo "applied $n patch(es)"
+
+  - name: Limit concurrent LTO links
+    runs: |
+      # Same as percona-server: WITH_LTO links with -flto=$(nproc); add a "link" job pool (scheduling only).
+      f=pxc-src/CMakeLists.txt
+      grep -q 'SET_PROPERTY(GLOBAL PROPERTY JOB_POOLS one_job=1)' "$f"
+      sed -i 's/SET_PROPERTY(GLOBAL PROPERTY JOB_POOLS one_job=1)/SET_PROPERTY(GLOBAL PROPERTY JOB_POOLS one_job=1 link=4)/' "$f"
+      grep -q 'JOB_POOLS one_job=1 link=4' "$f"
+
+  - name: Configure
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      top=$(pwd)
+      # Same reproducibility launcher as percona-server: per-object -frandom-seed=<output path>, ccache when
+      # CCACHE_DIR is set; the workspace path is mapped away with -ffile-prefix-map. Non-semantic.
+      cat > "$top/pxc-cc-launcher" <<'SH'
+      #!/bin/sh
+      out= prev=
+      for a in "$@"; do
+        [ "$prev" = "-o" ] && out=$a
+        prev=$a
+      done
+      cc=$1
+      shift
+      if [ -n "$out" ]; then set -- "-frandom-seed=$out" "$@"; fi
+      if [ -n "${CCACHE_DIR:-}" ] && command -v ccache >/dev/null 2>&1; then exec ccache "$cc" "$@"; fi
+      exec "$cc" "$@"
+      SH
+      chmod +x "$top/pxc-cc-launcher"
+      # Galera's revision (garbd --version, wsrep_provider_version): version.cmake reads <build>/GALERA_GIT_REVISION
+      # when present instead of `git rev-parse --short`, whose length depends on the clone. Pinned here.
+      mkdir -p pxc-build
+      printf '%s' "@@galera_revision@@" > pxc-build/GALERA_GIT_REVISION
+      # RPM %build: CFLAGS = RPM_OPT_FLAGS -Wno-implicit-function-declaration -Wno-error=stringop-overflow
+      # -Wno-error=free-nonheap-object; CXXFLAGS = RPM_OPT_FLAGS -felide-constructors -Wno-error=stringop-overflow
+      # -Wno-error=free-nonheap-object. RPM_OPT_FLAGS is replaced by the shared hardening baseline (ruling R7), plus
+      # the path map (also in LDFLAGS for the LTO link step, see percona-server).
+      export CFLAGS="@@hardening_cflags@@ -Wno-implicit-function-declaration -Wno-error=stringop-overflow -Wno-error=free-nonheap-object -ffile-prefix-map=$top=."
+      export CXXFLAGS="@@hardening_cflags@@ -felide-constructors -Wno-error=stringop-overflow -Wno-error=free-nonheap-object -ffile-prefix-map=$top=."
+      export CPPFLAGS=""
+      export LDFLAGS="@@hardening_ldflags@@ -flto-partition=balanced -ffile-prefix-map=$top=."
+      # RPM cmake_common_flags + the release build line, verbatim except: WITH_CURL=bundled (OpenSSL ruling),
+      # WITH_MECAB=system (local mecab package), WITH_ROUTER=OFF, no -DDOWNLOAD_BOOST/-DWITH_BOOST (cmake/boost.cmake
+      # uses the in-tree Boost 1.87, nothing is downloaded), WITH_EDITLINE=bundled (WITH_READLINE is gone from MySQL 9), Ninja + launchers + CMake 4 policy.
+      # /usr/bin compilers, not Wolfi's openssf wrappers (see percona-server).
+      cmake -S pxc-src -B pxc-build -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/lib/ninja-build/bin/ninja \
+        -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMINIMAL_RELWITHDEBINFO=OFF \
+        -DBUILD_CONFIG=mysql_release -DINSTALL_LAYOUT=RPM \
+        -DWITH_PACKAGE_FLAGS=OFF \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DWITH_EMBEDDED_SERVER=OFF -DWITH_EMBEDDED_SHARED_LIBRARY=0 \
+        -DWITH_INNODB_MEMCACHED=ON -DUSE_LD_LLD=0 \
+        -DWITH_AUTHENTICATION_CLIENT_PLUGINS=1 \
+        -DWITH_CURL=bundled -DWITH_SYSTEMD=OFF -DENABLE_DTRACE=OFF \
+        -DWITH_SSL=system -DWITH_ZLIB=bundled -DWITH_ZSTD=bundled -DWITH_EDITLINE=bundled \
+        -DWITHOUT_TOKUDB=ON -DWITH_ROCKSDB=0 \
+        -DINSTALL_MYSQLSHAREDIR=share/percona-xtradb-cluster \
+        -DINSTALL_SUPPORTFILESDIR=share/percona-xtradb-cluster \
+        -DINSTALL_LIBDIR=lib64/mysql -DINSTALL_PLUGINDIR=lib64/mysql/plugin -DSYSCONFDIR=/etc \
+        -DMYSQL_UNIX_ADDR=/var/lib/mysql/mysql.sock \
+        -DFEATURE_SET=community \
+        -DWITH_WSREP=ON -DWITH_PERCONA_TELEMETRY=ON -DWITH_LDAP=system \
+        -DWITH_INNODB_DISALLOW_WRITES=ON \
+        -DWITH_FIDO=bundled -DWITH_UNIT_TESTS=0 -DWITH_SCALABILITY_METRICS=ON \
+        -DMYSQL_SERVER_SUFFIX=".@@pxc_rpm_release@@" \
+        -DWITH_LTO=ON -DWITH_MECAB=system -DWITH_PAM=ON -DWITH_ROUTER=OFF \
+        -DCOMPILATION_COMMENT="Percona XtraDB Cluster (GPL), Release rel@@pxc_release@@, Revision @@pxc_revision@@, WSREP version @@pxc_wsrep_version@@" \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DCMAKE_JOB_POOL_LINK=link \
+        -DCMAKE_C_COMPILER_LAUNCHER="$top/pxc-cc-launcher" \
+        -DCMAKE_CXX_COMPILER_LAUNCHER="$top/pxc-cc-launcher" \
+        -DCMAKE_C_LINKER_LAUNCHER="$top/pxc-cc-launcher" \
+        -DCMAKE_CXX_LINKER_LAUNCHER="$top/pxc-cc-launcher"
+      c=pxc-build/CMakeCache.txt
+      # hardening baseline reached the cache (see percona-server)
+      grep -q '^CMAKE_CXX_FLAGS:STRING=.*-fstack-clash-protection' "$c"
+      grep -q '^CMAKE_EXE_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      grep -q '^CMAKE_SHARED_LINKER_FLAGS:STRING=.*-z,now' "$c"
+      if grep -q '^CMAKE_C_FLAGS:' "$c"; then grep -q '^CMAKE_C_FLAGS:STRING=.*-fstack-clash-protection' "$c"; fi
+      if grep -q '^CMAKE_MODULE_LINKER_FLAGS:' "$c"; then grep -q '^CMAKE_MODULE_LINKER_FLAGS:STRING=.*-z,now' "$c"; fi
+      # OpenSSL ruling: OpenSSL 3 headers, curl bundled; Galera and wsrep are part of the build
+      grep -Eq 'define OPENSSL_VERSION_MAJOR +3$' /usr/include/openssl/opensslv.h
+      grep -q '^WITH_CURL:STRING=bundled$' "$c"
+      grep -q '^WITH_WSREP:BOOL=ON$' "$c"
+      grep -Eq '^WITH_ROUTER:(BOOL|UNINITIALIZED)=OFF$' "$c"
+      grep -q '^CMAKE_CXX_COMPILER:[A-Z]*=/usr/bin/g++$' "$c"
+      grep -q 'galera_smm' pxc-build/build.ninja
+      grep -q 'garbd' pxc-build/build.ninja
+
+  - name: Build
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      /usr/lib/ninja-build/bin/ninja -C pxc-build -j"$(nproc)"
+      if command -v ccache >/dev/null 2>&1 && [ -n "${CCACHE_DIR:-}" ]; then ccache --show-stats || true; fi
+
+  - name: Install
+    runs: |
+      export SOURCE_DATE_EPOCH=@@source_date_epoch@@
+      DESTDIR="${{targets.destdir}}" cmake --install pxc-build
+
+  - name: Wolfi layout and RPM %install
+    runs: |
+      d="${{targets.destdir}}"
+      g=pxc-src/percona-xtradb-cluster-galera
+      # merged /usr: RPM paths are symlinks on Wolfi (wolfi-baselayout), so ship the real directories
+      for pair in usr/sbin:usr/bin usr/lib64:usr/lib; do
+        from=${pair%%:*} to=${pair#*:}
+        if [ -d "$d/$from" ]; then
+          mkdir -p "$d/$to"
+          cp -a "$d/$from/." "$d/$to/"
+          rm -rf "${d:?}/$from"
+        fi
+      done
+      # RPM %install removals (kmip, the galera install's share/ copies of the garb service files, /usr/man,
+      # /usr/doc, ps-admin, ps_tokudb_admin, coredumper cmake files), plus the support files the RPM does not
+      # ship and the build-host dependent INFO_BIN/INFO_SRC
+      rm -rf "$d/usr/share/info" "$d/usr/cmake" "$d/usr/README" \
+        "$d/usr/include/kmip.h" "$d/usr/include/kmippp.h" "$d"/usr/lib/libkmip*.a \
+        "$d/usr/lib/libgalera_smm.so" "$d/usr/share/garb-systemd" "$d/usr/share/garb.cnf" "$d/usr/share/garb.service" \
+        "$d/usr/bin/ps-admin" "$d/usr/bin/ps_tokudb_admin" "$d/usr/bin/mysql_embedded" \
+        "$d"/usr/share/man/man1/make_win_bin_dist.1* \
+        "$d/usr/share/percona-xtradb-cluster/win_install_firewall.sql" \
+        "$d/usr/share/percona-xtradb-cluster/audit_log_filter_win_install.sql"
+      if [ -d "$d/usr/man" ]; then rm -rf "$d/usr/man"; fi
+      if [ -d "$d/usr/doc" ]; then rm -rf "$d/usr/doc"; fi
+      find "$d" \( -name 'INFO_BIN*' -o -name 'INFO_SRC*' \) -exec rm -f {} +
+      find "$d/usr/share/mysql-test" -maxdepth 1 \( -name 'core' -o -name 'core.*' \) -exec rm -f {} + 2>/dev/null || true
+      # galera's own docs install (COPYING, README-MySQL, LICENSE.asio into INSTALL_DOCDIR): the RPM installs its
+      # own set below instead
+      find "$d/usr/share/doc" -maxdepth 2 \( -name COPYING -o -name README-MySQL -o -name LICENSE.asio \) -exec rm -f {} + 2>/dev/null || true
+      # RPM: /etc/my.cnf from build-ps/rpm/mysqld.cnf, logrotate, runtime dirs. Not the RPM's empty /etc/my.cnf.d
+      # directory: the image makes /etc/my.cnf.d a symlink to /etc/mysql/conf.d (percona-xtradb-cluster-docker-config),
+      # and apk cannot replace a packaged directory with a symlink (docs/deviations.md).
+      install -Dm0644 pxc-src/build-ps/rpm/mysqld.cnf "$d/etc/my.cnf"
+      install -Dm0644 pxc-build/support-files/mysql-log-rotate "$d/etc/logrotate.d/mysql"
+      install -d -m0750 "$d/var/lib/mysql-files" "$d/var/lib/mysql-keyring"
+      install -d -m0755 "$d/etc/mysql/certs" "$d/var/lib/galera"
+      # RPM %posttrans: /usr/share/mysql -> percona-xtradb-cluster (as percona-server)
+      ln -s percona-xtradb-cluster "$d/usr/share/mysql"
+      # RPM: echo /usr/lib64/mysql > /etc/ld.so.conf.d/percona-xtradb-cluster-shared-<version>-x86_64.conf (merged path,
+      # see percona-server: melange's scanner then treats /usr/lib/mysql as a library dir)
+      install -d "$d/etc/ld.so.conf.d"
+      echo /usr/lib/mysql > "$d/etc/ld.so.conf.d/percona-xtradb-cluster-shared-@@pxc_version@@-x86_64.conf"
+      # Galera provider (RPM): lib64/galera4/libgalera_smm.so, the lib64/libgalera_smm.so symlink and
+      # lib64/mysql/libgalera_smm.so (the cmake install; a second copy in the RPM, a symlink here)
+      lib=$d/usr/lib
+      # the cmake install puts it into INSTALL_LIBDIR (RPM %files lib64/mysql); the spec copies it from the build tree
+      # (release/percona-xtradb-cluster-galera/libgalera_smm.so), the fallback here
+      if [ ! -f "$lib/mysql/libgalera_smm.so" ]; then
+        install -Dm0755 pxc-build/percona-xtradb-cluster-galera/libgalera_smm.so "$lib/mysql/libgalera_smm.so"
+      fi
+      install -d "$lib/galera4"
+      mv "$lib/mysql/libgalera_smm.so" "$lib/galera4/libgalera_smm.so"
+      chmod 0755 "$lib/galera4/libgalera_smm.so"
+      ln -s galera4/libgalera_smm.so "$lib/libgalera_smm.so"
+      ln -s ../galera4/libgalera_smm.so "$lib/mysql/libgalera_smm.so"
+      for doc in percona-xtradb-cluster-galera percona-xtradb-cluster-garbd-3; do
+        install -Dm0644 "$g/COPYING" "$d/usr/share/doc/$doc/COPYING"
+        install -Dm0644 "$g/README" "$d/usr/share/doc/$doc/README"
+      done
+      install -Dm0644 "$g/asio/LICENSE_1_0.txt" "$d/usr/share/doc/percona-xtradb-cluster-galera/LICENSE.asio"
+      # garbd (RPM): /usr/bin/garbd, /etc/sysconfig/garb (garb/files/garb.cnf), garbd.8; no init script or unit
+      # installed by galera's garb/CMakeLists.txt (INSTALL_GARBD=bin); fallback: its RUNTIME_OUTPUT_DIRECTORY
+      if [ ! -x "$d/usr/bin/garbd" ]; then
+        install -Dm0755 pxc-build/percona-xtradb-cluster-galera/bin/garbd "$d/usr/bin/garbd"
+      fi
+      install -Dm0644 "$g/garb/files/garb.cnf" "$d/etc/sysconfig/garb"
+      install -Dm0644 "$g/man/garbd.8" "$d/usr/share/man/man8/garbd.8"
+      # RPM %doc of the server
+      install -Dm0644 pxc-src/Docs/README-wsrep "$d/usr/share/doc/percona-xtradb-cluster-server/README-wsrep"
+      install -Dm0644 pxc-src/LICENSE "$d/usr/share/licenses/percona-xtradb-cluster/LICENSE"
+      install -Dm0644 pxc-src/README.md "$d/usr/share/licenses/percona-xtradb-cluster/README.md"
+
+  - name: Build-path leak scan
+    runs: |
+      # Same as percona-server: no installed file may embed the workspace path (build-path-allowlist next to the recipe
+      # lists justified exceptions; LEAK_SCAN=warn reports only; glibc's /home/build/csu is not from this build).
+      allow=
+      if [ -f build-path-allowlist ]; then allow=build-path-allowlist; fi
+      LEAK_IGNORE="$(pwd)/csu" LEAK_SCAN="${LEAK_SCAN:-fatal}" bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)" $allow
+  # No `uses: strip`: percona-xtradb-cluster-dbg (first subpackage) runs split/debug over the whole tree.
+
+subpackages:
+  # Order matters (see percona-server): -dbg first, -server (catch-all) last.
+  - name: percona-xtradb-cluster-dbg
+    description: Debug symbols for all percona-xtradb-cluster binaries, plugins, libraries, Galera and garbd
+    pipeline:
+      - uses: split/debug
+    options:
+      no-depends: true
+
+  # RPM %files -n percona-xtradb-cluster-test (+ mysqltest and mysql_keyring_encryption_test, which the RPM puts in
+  # -server and the official Dockerfile deletes, and the test plugins: same list as percona-server)
+  - name: percona-xtradb-cluster-test
+    description: Percona XtraDB Cluster test suite (mysql-test tree, mysqltest, test plugins) for MTR runs
+    options:
+      no-depends: true
+    dependencies:
+      runtime:
+        - percona-xtradb-cluster-server
+        - percona-xtradb-cluster-client
+        - perl
+        - bash
+        - procps
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          mvp usr/share/mysql-test
+          for b in mysql_client_test mysqltest mysqltest_safe_process mysqlxtest mysql_keyring_encryption_test \
+            mysql_test_event_tracking; do
+            mvp usr/bin/$b usr/share/man/man1/$b.1 usr/share/man/man1/$b.1.gz
+          done
+          # test plugins: everything percona-server-test ships, if built here
+          for p in auth.so auth_test_plugin.so daemon_example.ini libdaemon_example.so replication_observers_example_plugin.so \
+            pfs_example_plugin_employee.so qa_auth_client.so qa_auth_interface.so qa_auth_server.so test_security_context.so \
+            test_services_plugin_registry.so test_udf_services.so udf_example.so conflicting_variables.so \
+            test_services_command_services.so; do
+            mvp "usr/lib/mysql/plugin/$p"
+          done
+          for f in "$d"/usr/lib/mysql/plugin/component_test_* "$d"/usr/lib/mysql/plugin/component_example_* \
+            "$d"/usr/lib/mysql/plugin/component_udf_* "$d"/usr/lib/mysql/plugin/component_pfs_example* \
+            "$d"/usr/lib/mysql/plugin/component_log_sink_test.so "$d"/usr/lib/mysql/plugin/component_mysqlx_global_reset.so \
+            "$d"/usr/lib/mysql/plugin/libtest_*.so; do
+            [ -e "$f" ] || continue
+            mvp "usr/lib/mysql/plugin/${f##*/}"
+          done
+          test -d "$s/usr/share/mysql-test"
+          test -x "$s/usr/bin/mysqltest"
+
+  - name: percona-xtradb-cluster-icu-data-files
+    description: ICU data files used by the Percona XtraDB Cluster regular expression library
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/usr/lib/mysql/private"
+          n=0
+          for f in "$d"/usr/lib/mysql/private/icudt*; do
+            [ -e "$f" ] || continue
+            mv "$f" "$s/usr/lib/mysql/private/"
+            n=$((n + 1))
+          done
+          test "$n" -gt 0
+
+  # RPM %files -n percona-xtradb-cluster-devel
+  - name: percona-xtradb-cluster-dev
+    description: Percona XtraDB Cluster development files (headers, mysql_config, static client library, pkg-config)
+    dependencies:
+      runtime:
+        - percona-xtradb-cluster-libs
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          mvp usr/include usr/lib/pkgconfig usr/share/aclocal usr/lib/libcoredumper.a \
+            usr/bin/mysql_config usr/share/man/man1/mysql_config.1 usr/share/man/man1/mysql_config.1.gz \
+            usr/lib/mysql/libperconaserverclient.so
+          for f in "$d"/usr/lib/mysql/*.a; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            mvp "usr/lib/mysql/${f##*/}"
+          done
+          test -f "$s/usr/include/mysql/mysql.h"
+          test -x "$s/usr/bin/mysql_config"
+
+  # The Galera provider: in the RPM it is part of percona-xtradb-cluster-server (%files: libgalera_smm.so in lib64,
+  # lib64/galera4 and lib64/mysql, /var/lib/galera, the galera docs); its own subpackage here, required by -server.
+  - name: percona-xtradb-cluster-galera
+    description: Galera @@galera_version@@ wsrep provider (libgalera_smm.so) of Percona XtraDB Cluster
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/usr/lib/mysql" "$s/usr/share/doc"
+          mv "$d/usr/lib/galera4" "$d/usr/lib/libgalera_smm.so" "$s/usr/lib/"
+          mv "$d/usr/lib/mysql/libgalera_smm.so" "$s/usr/lib/mysql/"
+          mv "$d/usr/share/doc/percona-xtradb-cluster-galera" "$s/usr/share/doc/"
+          test -f "$s/usr/lib/galera4/libgalera_smm.so"
+          test -L "$s/usr/lib/libgalera_smm.so"
+
+  # RPM %files -n percona-xtradb-cluster-garbd (no init script / systemd unit: containers)
+  - name: percona-xtradb-cluster-garbd
+    description: Galera arbitrator (garbd) of Percona XtraDB Cluster @@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mkdir -p "$s/usr/bin" "$s/etc/sysconfig" "$s/usr/share/doc" "$s/usr/share/man/man8" "$s/var/lib"
+          mv "$d/usr/bin/garbd" "$s/usr/bin/"
+          mv "$d/etc/sysconfig/garb" "$s/etc/sysconfig/"
+          rmdir "$d/etc/sysconfig" 2>/dev/null || true
+          mv "$d/usr/share/doc/percona-xtradb-cluster-garbd-3" "$s/usr/share/doc/"
+          mv "$d/usr/share/man/man8/garbd.8" "$s/usr/share/man/man8/"
+          # RPM: %attr(0755,nobody,nobody) %dir /var/lib/galera, in both -server and -garbd; here in -garbd only
+          # (-server keeps its copy: apk allows a directory in two packages)
+          install -d -m0755 "$s/var/lib/galera"
+          test -x "$s/usr/bin/garbd"
+
+  # RPM percona-xtradb-cluster-shared + -client-plugins (as percona-server-libs: the client-side auth plugins go with
+  # the library)
+  - name: percona-xtradb-cluster-libs
+    description: Percona XtraDB Cluster client library (libperconaserverclient, RPM -shared) and client-side auth plugins
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          for f in "$d"/usr/lib/mysql/libperconaserverclient.so.* "$d"/usr/lib/mysql/private/libfido2.so*; do
+            mvp "${f#"$d"/}"
+          done
+          mvp etc/ld.so.conf.d/percona-xtradb-cluster-shared-@@pxc_version@@-x86_64.conf
+          for p in authentication_ldap_sasl_client.so authentication_kerberos_client.so mysql_native_password.so \
+            authentication_openid_connect_client.so authentication_oci_client.so dialog.so \
+            authentication_webauthn_client.so; do
+            mvp "usr/lib/mysql/plugin/$p"
+          done
+          ls "$s"/usr/lib/mysql/libperconaserverclient.so.*
+          test -f "$s/usr/lib/mysql/plugin/dialog.so"
+
+  - name: percona-xtradb-cluster-client
+    description: Percona XtraDB Cluster command line clients (mysql, mysqldump, mysqladmin, ...)
+    dependencies:
+      runtime:
+        - percona-xtradb-cluster-libs
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          for b in mysql mysqladmin mysqlbinlog mysqlcheck mysqldump mysqlimport mysqlshow mysqlslap \
+            mysql_config_editor; do
+            for f in "usr/bin/$b" "usr/share/man/man1/$b.1" "usr/share/man/man1/$b.1.gz"; do
+              [ -e "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          done
+          test -x "$s/usr/bin/mysql"
+          test -x "$s/usr/bin/mysqldump"
+
+  # Files with a perl or python `#!` line (mysqld_multi, mysqldumpslow, pyclustercheck, ...): melange would make
+  # -server depend on perl and python. The RPM keeps them in -server, but the official image installs the rpms with
+  # --nodeps and has neither interpreter, so they never ran there; the image does not install this subpackage.
+  # Shell scripts (wsrep_sst_*, clustercheck, mysqld_safe, ps_mysqld_helper) stay in -server: SST needs them.
+  - name: percona-xtradb-cluster-scripts
+    description: Percona XtraDB Cluster perl/python helper scripts (mysqld_multi, mysqldumpslow, pyclustercheck)
+    dependencies:
+      runtime:
+        - percona-xtradb-cluster-server
+        - percona-xtradb-cluster-client
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          mvp() {
+            for f in "$@"; do
+              [ -e "$d/$f" ] || [ -L "$d/$f" ] || continue
+              mkdir -p "$s/$(dirname "$f")"
+              mv "$d/$f" "$s/$f"
+            done
+          }
+          (cd "$d" && find . -type f ! -path './usr/share/licenses/*' | sed 's#^\./##' | LC_ALL=C sort) |
+            while read -r f; do
+              [ -f "$d/$f" ] || continue
+              l=$(head -n1 "$d/$f" | tr -d '\000')
+              case $l in
+                '#!'*perl* | '#!'*python*) ;;
+                *) continue ;;
+              esac
+              echo "SCRIPT (moved into percona-xtradb-cluster-scripts): $f: $l"
+              mvp "$f"
+              case $f in
+                usr/bin/*) b=${f#usr/bin/}; mvp "usr/share/man/man1/$b.1" "usr/share/man/man1/$b.1.gz" ;;
+              esac
+            done
+          test -e "$s/usr/bin/mysqldumpslow"
+
+  - name: percona-xtradb-cluster-server
+    description: Percona XtraDB Cluster server (mysqld with wsrep, SST scripts, plugins, share files, my.cnf)
+    dependencies:
+      runtime:
+        - percona-xtradb-cluster-libs
+        - percona-xtradb-cluster-icu-data-files
+        - percona-xtradb-cluster-galera
+        # SST (wsrep_sst_xtrabackup-v2): /usr/bin/pxc_extra/pxb-9.7 points at this repository's XtraBackup build;
+        # socat streams the backup, the script itself is bash
+        - percona-xtrabackup
+        - socat
+        - bash
+    pipeline:
+      - runs: |
+          d="${{targets.destdir}}" s="${{targets.subpkgdir}}"
+          test -x "$d/usr/bin/mysqld"
+          test -x "$d/usr/bin/wsrep_sst_xtrabackup-v2"
+          # RPM: /usr/bin/pxc_extra/pxb-<x.y>/{bin,lib} hold the XtraBackup rpms of 8.4, 9.6 and 9.7 (yumdownloader at
+          # build time); wsrep_sst_xtrabackup-v2 picks pxb-<donor major.minor>. Only 9.7 is built here (docs/deviations.md):
+          # pxb-9.7 links to the percona-xtrabackup package (glibc resolves $ORIGIN of a symlinked executable through
+          # /proc/self/exe, so its private libraries are found).
+          x=$d/usr/bin/pxc_extra/pxb-9.7
+          mkdir -p "$x/bin" "$x/lib"
+          for b in xtrabackup xbstream xbcrypt xbcloud xbcloud_osenv; do ln -s "/usr/bin/$b" "$x/bin/$b"; done
+          ln -s /usr/lib/xtrabackup/plugin "$x/lib/plugin"
+          # Catch-all: everything still in the main tree belongs to the server. Paths outside the expected set are
+          # moved too but listed for review in the build log.
+          expected='^(usr/bin|usr/lib/mysql|usr/share/percona-xtradb-cluster|usr/share/mysql|usr/share/man|usr/share/doc|usr/share/licenses|etc/my\.cnf|etc/my\.cnf\.d|etc/logrotate\.d/mysql|etc/mysql|var/lib/(mysql-files|mysql-keyring|galera))(/|$)'
+          (cd "$d" && find . -mindepth 1 \( -type f -o -type l \) | sed 's#^\./##' | LC_ALL=C sort) |
+            grep -Ev "$expected" | sed 's/^/UNEXPECTED-PATH (moved into percona-xtradb-cluster-server): /' || true
+          mkdir -p "$s"
+          for f in "$d"/* "$d"/.[!.]*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            mv "$f" "$s/"
+          done
+          test -z "$(ls -A "$d")"
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - procps
+        - percona-xtradb-cluster-server
+        - percona-xtradb-cluster-client
+        - percona-xtradb-cluster-galera
+        - percona-xtradb-cluster-garbd
+        - percona-xtradb-cluster-test
+        - percona-xtradb-cluster-scripts
+        - perl
+        # ldd for the library checks
+        - posix-libc-utils
+        # readelf for the hardening step
+        - binutils
+  pipeline:
+    - name: smoke test (tests/smoke.sh)
+      runs: |
+        test -f tests/smoke.sh || { echo "tests/smoke.sh missing from the test workspace (staged source dir)" >&2; exit 1; }
+        PXC_VERSION="@@pxc_version@@-@@pxc_release@@.@@pxc_rpm_release@@" PXC_WSREP_VERSION="@@pxc_wsrep_version@@" \
+          GALERA_VERSION="@@galera_version@@" GALERA_REVISION="@@galera_revision@@" bash tests/smoke.sh
+    - name: hardening (RELRO, BIND_NOW, stack protector)
+      runs: |
+        # ruling R7 baseline, as percona-server; libgalera_smm.so and garbd are built by the same CMake run
+        for f in /usr/bin/mysqld /usr/bin/mysql /usr/bin/garbd /usr/lib/galera4/libgalera_smm.so; do
+          readelf -lW "$f" | grep -q GNU_RELRO || { echo "$f: no GNU_RELRO segment" >&2; exit 1; }
+          readelf -dW "$f" | grep -Eq '\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*NOW' || { echo "$f: neither DT_FLAGS BIND_NOW nor DT_FLAGS_1 NOW" >&2; exit 1; }
+          readelf --dyn-syms -W "$f" | grep __stack_chk_fail >/dev/null || { echo "$f: no __stack_chk_fail import" >&2; exit 1; }
+          echo "ok: $f (RELRO, BIND_NOW, stack protector)"
+        done
+
+update:
+  enabled: false

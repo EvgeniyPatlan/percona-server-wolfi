@@ -30,7 +30,8 @@ PACKAGES := mecab mecab-ipadic v8 percona-server percona-mysql-shell percona-xtr
   percona-mysql-router-docker-scripts percona-haproxy-docker-scripts percona-fluentbit-docker-scripts \
   percona-orchestrator percona-orchestrator-docker-scripts \
   percona-server-mysql-operator percona-xtradb-cluster-operator \
-  percona-proxysql-admin percona-proxysql-docker-scripts
+  percona-proxysql-admin percona-proxysql-docker-scripts \
+  percona-xtradb-cluster percona-xtradb-cluster-docker-scripts
 
 .PHONY: packages $(addprefix pkg-,$(PACKAGES))
 

@@ -1,0 +1,21 @@
+Subject: keyring_vault unit test library links ext::curl, like the component itself
+Error: unittest/gunit/components/keyring_vault: ../pxc-src/components/keyrings/keyring_vault/backend/vault_curl.h:26:10:
+  fatal error: curl/curl.h: No such file or directory
+Why: the test library (component_keyring_vault_test) compiles the vault backend but never links ext::curl, so
+  it only built while curl.h sat in /usr/include (system curl). With WITH_CURL=bundled (OpenSSL ruling,
+  docs/deviations.md: Wolfi's curl-dev needs the OpenSSL 4 headers) curl's include dir comes only from ext::curl.
+  Build-only fix: the same curl the component links.
+Upstream: none found (searched the percona-xtradb-cluster tree at the pinned tag)
+Drop-when: (same patch as packages/percona-server/patches) the test CMakeLists links ext::curl upstream, or the recipe goes back to WITH_CURL=system
+
+--- a/unittest/gunit/components/keyring_vault/CMakeLists.txt
++++ b/unittest/gunit/components/keyring_vault/CMakeLists.txt
+@@ -21,7 +21,7 @@
+ 
+ add_library(component_keyring_vault_test STATIC ${SRC_FILES})
+ add_dependencies(component_keyring_vault_test GenError)
+-target_link_libraries(component_keyring_vault_test extra::rapidjson library_mysys)
++target_link_libraries(component_keyring_vault_test ext::curl extra::rapidjson library_mysys)
+ target_compile_definitions(component_keyring_vault_test PUBLIC LOG_COMPONENT_TAG="component_keyring_vault")
+ target_include_directories(component_keyring_vault_test SYSTEM PUBLIC
+   ${CMAKE_SOURCE_DIR}

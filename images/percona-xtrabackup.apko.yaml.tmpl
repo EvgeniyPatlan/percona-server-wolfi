@@ -1,12 +1,9 @@
 # percona-xtrabackup:@@pxb_version@@-@@pxb_release@@ - drop-in replacement for the official percona/percona-xtrabackup:9.7
 # (percona-docker percona-xtrabackup-9.x/Dockerfile at percona_docker_commit; facts in docs/research.md section 2).
-# Not included (docs/deviations.md): percona-xtradb-cluster-garbd, AWS CLI v2, azure-cli, shadow-utils.
-#
-# TODO(garbd): the official image installs percona-xtradb-cluster-garbd (the Galera arbitrator, /usr/bin/garbd), used
-# by the PXC operator for SST/backup through the arbitrator; the Percona Server operator never calls it. garbd is
-# built from the Galera sources of Percona XtraDB Cluster (percona/percona-xtradb-cluster, percona-xtradb-cluster-galera
-# submodule), which this repository does not build yet (docs/roadmap.md, item 9). When PXC is added: build a garbd
-# subpackage from that Galera tree, add it to the package list below, and drop garbd from the deviations row.
+# Not included (docs/deviations.md): AWS CLI v2, azure-cli, shadow-utils.
+# garbd (the Galera arbitrator, /usr/bin/garbd, as the official image's percona-xtradb-cluster-garbd) is the
+# percona-xtradb-cluster-garbd subpackage of packages/percona-xtradb-cluster (built from the Galera submodule of the
+# PXC source tree).
 contents:
   repositories:
     - https://packages.wolfi.dev/os
@@ -34,6 +31,8 @@ contents:
     - percona-xtrabackup
     - percona-server-libs
     - percona-server-client
+    # Dockerfile: percona-xtradb-cluster-garbd
+    - percona-xtradb-cluster-garbd
     # pxb-entry.sh as /docker-entrypoint.sh, /call-home.sh, /backup, /usr/local/percona
     # (never together with percona-telemetry-agent: both ship /call-home.sh)
     - percona-xtrabackup-docker-scripts

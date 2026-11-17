@@ -60,6 +60,33 @@ pxb_revision: "59328573"
 # Python of the Wolfi sphinx used to generate the man pages (-DWITH_MAN_PAGES=1 runs sphinx-build; no prebuilt pages in-tree)
 pxb_sphinx_python: "3.13"
 
+# --- Percona XtraDB Cluster (github.com/percona/percona-xtradb-cluster), with Galera and garbd ---
+# percona-docker percona-xtradb-cluster-9.x/Dockerfile at percona_docker_commit: PXC_VERSION 9.7.2-2.1 (based on
+# Percona Server 9.7.2-2, the ps_tag above). VERIFY-BEFORE-RELEASE: Docker Hub :9.7 moved to 9.7.2-3.1 on 2026-11-12
+# (tag Percona-XtraDB-Cluster-9.7.2-3.1, commit 9365e5b8336343a1cb3c594e4261a2a306fac7a1); move with ps_tag.
+pxc_tag: "Percona-XtraDB-Cluster-9.7.2-2.1"
+# peeled commit of the tag (tag object 98d466e60790...)
+pxc_commit: "e648f70198d26b865981e801c9cbab452c6d53a5"
+# MYSQL_VERSION at pxc_commit: 9.7.2, MYSQL_VERSION_EXTRA -2; the RPM release is .1 (PXC_VERSION 9.7.2-2.1)
+pxc_version: "9.7.2"
+pxc_release: "2"
+pxc_rpm_release: "1"
+# "Revision" in COMPILATION_COMMENT: first 8 hex digits of pxc_commit (same convention as ps_revision)
+pxc_revision: "e648f701"
+# WSREP version in COMPILATION_COMMENT (pxc_builder.sh: WSREP_INTERFACE_VERSION of wsrep-lib/wsrep-API/v26/wsrep_api.h
+# "26.1" + WSREP_PATCH_VERSION of cmake/wsrep-lib.cmake "4.3")
+pxc_wsrep_version: "26.1.4.3"
+# submodule pins of pxc_commit (git ls-tree), checked by the recipe after the recursive checkout
+# percona-xtradb-cluster-galera -> github.com/percona/galera (GALERA_VERSION 4.27, wsrep API 26)
+galera_commit: "13ff9ed6577de1aa01e6e296f87ba439cde70b98"
+galera_version: "4.27"
+# Galera revision in `garbd --version` and the provider's wsrep_provider_version: `git rev-parse --short` of the
+# galera checkout (version.cmake), pinned to 7 digits through <build>/GALERA_GIT_REVISION
+galera_revision: "13ff9ed"
+# wsrep-lib -> github.com/percona/wsrep-lib; wsrep-API (both galera/wsrep/src and wsrep-lib/wsrep-API/v26)
+wsrep_lib_commit: "96ab92c40674846a20c1eb33960c120f7509c645"
+wsrep_api_commit: "63d27582b2bb0dc8291456077cdc3da229104d17"
+
 # --- Telemetry agent (github.com/percona/telemetry-agent) ---
 # inferred: newest rpm in the telemetry repo when the official image was built (see research.md)
 # VERIFY-BEFORE-RELEASE: inferred, confirm via rpm -q percona-telemetry-agent in official image
@@ -123,6 +150,12 @@ official_router_image: "docker.io/percona/percona-mysql-router@sha256:a1ecf51e06
 # percona/proxysql3:3.0.9-1.1 (index digest, 2026-11-17; the tag Dockerfile-proxysql3 at percona_docker_commit builds;
 # :3.0 / :latest have moved on to 3.0.9-1.3)
 official_proxysql3_image: "docker.io/percona/proxysql3@sha256:f875955d7e58b999b0a3bf3523cfb6aed53065685415def968cb08c5fb3976d4"
+# percona/percona-xtradb-cluster:9.7.2-2.1 (the PXC_VERSION of the Dockerfile at percona_docker_commit; index digest,
+# 2026-11-17). :9.7 is 9.7.2-3.1 now (sha256:9c59dc726ffec434cdc7d621f5586475fc64f00e6cf350c432d42a560bb8173d).
+official_pxc_image: "docker.io/percona/percona-xtradb-cluster@sha256:434475e6abfb16e10612f36f22e9000839e760b37f4c65d69377bcde316ce6ea"
+# PXC operator backup image built from percona-xtradb-cluster-9.x-backup (PXC 9.7.2-3.1, PXB 9.7.2-2.1):
+# perconalab/percona-xtradb-cluster-operator:9.7.2-pxc8.7-backup (index digest, 2026-11-17; no release tag exists yet)
+official_pxc_backup_image: "docker.io/perconalab/percona-xtradb-cluster-operator@sha256:0abf1a67fcda7b7ad50b6537c8be724e55ecc3dc9c181373cccf99f5866017f2"
 # previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
 official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"
 

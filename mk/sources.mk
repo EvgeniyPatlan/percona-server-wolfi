@@ -6,14 +6,17 @@ sources:
 # Local git mirrors of the repositories the recipes clone (scripts/git-mirror.sh, out/cache/git): melange-build.sh
 # makes git in the builds use them, so a slow or dropping GitHub costs at most the first fetch. Pins come from the
 # version file. Optional seeds (existing local clones, used instead of the network for the superproject):
-# PS_SEED=<path to a percona-server clone>, PXB_SEED=<path to a percona-xtrabackup clone>.
+# PS_SEED=<path to a percona-server clone>, PXB_SEED=<path to a percona-xtrabackup clone>,
+# PXC_SEED=<path to a percona-xtradb-cluster clone> (its Galera, wsrep-lib and wsrep-API submodules are mirrored too).
 .PHONY: git-mirrors
 git-mirrors:
 	$(call logged, source scripts/lib/common.sh; v() { vars_get $(VERSION_FILE) "$$1"; }; \
 	  scripts/git-mirror.sh https://github.com/percona/percona-server "$$(v ps_tag)" "$$(v ps_commit)" \
 	    $(if $(PS_SEED),--seed "$(PS_SEED)") && \
 	  scripts/git-mirror.sh https://github.com/percona/percona-xtrabackup "$$(v pxb_tag)" "$$(v pxb_commit)" \
-	    $(if $(PXB_SEED),--seed "$(PXB_SEED)"))
+	    $(if $(PXB_SEED),--seed "$(PXB_SEED)") && \
+	  scripts/git-mirror.sh https://github.com/percona/percona-xtradb-cluster "$$(v pxc_tag)" "$$(v pxc_commit)" \
+	    $(if $(PXC_SEED),--seed "$(PXC_SEED)"))
 
 # Vendor the V8 source tree (depot_tools, several GB, network) into sources/v8-<v8_tag>.tar.gz and print
 # the v8_src_sha256 line to paste into $(VERSION_FILE). When the tarball already exists it is only hashed (no fetch;

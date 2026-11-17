@@ -1,13 +1,16 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
-Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9.7 from source as Wolfi apk packages
-(melange) and assembles ten container images from them (apko). Not an official Percona image.
+Builds Percona Server for MySQL 9.7 (with MySQL Router), Percona XtraBackup 9.7 and Percona XtraDB Cluster 9.7 (with
+Galera and garbd) from source as Wolfi apk packages (melange) and assembles twelve container images from them (apko).
+Not an official Percona image.
 
 | Image | What it is |
 |---|---|
 | `percona-server:9.7` | Distroless: `ENTRYPOINT /usr/sbin/mysqld`, no shell, no package manager, no interpreters. |
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
-| `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
+| `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script, with garbd), without the AWS/Azure CLIs (see `docs/deviations.md`). |
+| `percona-xtradb-cluster:9.7` | Drop-in replacement for the official `percona/percona-xtradb-cluster:9.7` (PXC 9.7.2-2.1, Galera 4.27): same entrypoint (bootstrap with `MYSQL_ROOT_PASSWORD`, join with `CLUSTER_JOIN`, Kubernetes peer discovery), SST by XtraBackup, the PXC operator's tools. |
+| `percona-xtradb-cluster-backup:9.7` | The PXC operator's backup image (percona-docker `percona-xtradb-cluster-9.x-backup`): garbd, XtraBackup, the PXC client, the AWS CLI and the backup/restore scripts. |
 | `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
 | `percona-haproxy:3.4` | Drop-in replacement for the official `percona/haproxy:3.4.7-1` used by the Percona operators: Wolfi HAProxy 3.4.7 (same version) with the same entrypoint, configs and PXC check scripts, and the Percona Server 9.7 client. |
 | `percona-fluentbit:5.0` | Drop-in replacement for the official `percona/fluentbit:5.1.4-1` (the operators' log collector): Wolfi Fluent Bit 5.0.7 (one minor behind, see `docs/deviations.md`), logrotate, supercronic, the same entrypoint and configs, and the Percona Server 9.7 client. |
@@ -39,6 +42,8 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-xtradb-cluster-operator` | Percona Operator for MySQL based on PXC (Go); subpackage `-helpers` (peer-list, pitr, xtrabackup sidecar, ... and the init-container scripts in `/`, `/backup`, `/logcollector`) |
 | `percona-proxysql-admin` | Percona's ProxySQL tools as in the `proxysql3` rpm: `proxysql-admin`, `proxysql-status`, `percona-scheduler-admin`, `pxc_scheduler_handler` (Go, built here), the galera checker scripts, `/etc/config.toml` |
 | `percona-proxysql-docker-scripts` | Entrypoint, configuration and `add_*_nodes.sh` of the proxysql3 image from percona-docker; subpackage `percona-proxysql-my-print-defaults` (`my_print_defaults` alone, as the Dockerfile takes it from the server rpm) |
+| `percona-xtradb-cluster` | Percona XtraDB Cluster from one CMake build of the PXC tree (server with wsrep, the Galera submodule, garbd); subpackages `-server`, `-galera` (`libgalera_smm.so`), `-garbd`, `-client`, `-libs`, `-dev`, `-test`, `-icu-data-files`, `-scripts`, `-dbg` |
+| `percona-xtradb-cluster-docker-scripts` | Entrypoint and dockerdir of the PXC image from percona-docker (Wolfi-patched); `-docker-config` (my.cnf, node.cnf), `-backup-scripts` (the backup image's scripts) |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -66,6 +71,7 @@ matches the apks (commit the rewritten lock file).
     scripts/build.sh percona-orchestrator     # only the orchestrator image (no server build)
     scripts/build.sh percona-server-mysql-operator percona-xtradb-cluster-operator   # the operator images (Go only)
     scripts/build.sh percona-proxysql3        # only the ProxySQL image (server client, admin tools, entrypoint)
+    scripts/build.sh percona-xtradb-cluster percona-xtradb-cluster-backup   # the PXC images (PXC, XtraBackup for SST)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 
@@ -249,6 +255,27 @@ The entrypoint is the official one: it writes `PROXY_ADMIN_USER`/`PROXY_ADMIN_PA
 
 With a PXC cluster, `proxysql-admin` (and the operator's `add_pxc_nodes.sh`) configures the hostgroups instead.
 
+### `percona-xtradb-cluster:9.7`: Galera cluster
+
+    PXC=localhost:5000/percona-xtradb-cluster:9.7
+
+Same entrypoint as the official image: the first node bootstraps a new cluster (`MYSQL_ROOT_PASSWORD`, `CLUSTER_NAME`),
+the others join it with `CLUSTER_JOIN` and receive the data by SST (XtraBackup through socat). Cluster traffic is
+encrypted by default (`pxc-encrypt-cluster-traffic=ON`), which needs the same CA and certificates on every node
+(mount them and set `ssl-ca`/`ssl-cert`/`ssl-key` in a file under `/etc/mysql/conf.d`); for a quick local cluster turn
+it off:
+
+    docker network create pxc
+    docker run -d --name n1 --hostname n1 --network pxc -e MYSQL_ROOT_PASSWORD=secret -e CLUSTER_NAME=c1 \
+      $PXC --pxc-encrypt-cluster-traffic=OFF
+    # when n1 is up (docker logs n1: "Synced"):
+    docker run -d --name n2 --hostname n2 --network pxc -e MYSQL_ROOT_PASSWORD=secret -e CLUSTER_NAME=c1 \
+      -e CLUSTER_JOIN=n1 $PXC --pxc-encrypt-cluster-traffic=OFF
+    docker exec n1 mysql -uroot -psecret -e "SHOW STATUS LIKE 'wsrep_cluster_size'"
+
+`percona-xtradb-cluster-backup:9.7` is the PXC operator's backup image (garbd, XtraBackup, the backup scripts); it has
+no entrypoint. garbd also ships in `percona-xtrabackup:9.7`, as in the official image.
+
 ## Official image vs this build
 
 Measured on 2026-11-16 against `percona/percona-server:9.7` (9.7.2-3.1, pinned by digest as `official_ps_image`).
@@ -274,7 +301,7 @@ CVE counts are distinct (CVE, package) pairs from the pinned grype and trivy, wi
 
 XtraBackup: the official `percona/percona-xtrabackup:9.7` (9.7.2-2.1) is 1.54 GB on disk / 464 MB to download; the
 Wolfi `percona-xtrabackup:9.7` (9.7.2-2, same release) is 275 MB / 94 MB. A third of the official size is the Azure
-CLI (500 MB); it also ships the AWS CLI and garbd, which the Wolfi image does not (`docs/deviations.md`).
+CLI (500 MB); it also ships the AWS CLI, which the Wolfi image does not (`docs/deviations.md`). Both have garbd.
 CVEs (2026-11-16, same scanners and rules): official 551 (grype) / 570 (trivy), with 3 / 2 Critical and 48 / 58 High,
 in the RHEL 9.8 base (krb5-libs, sqlite-libs, util-linux, expat) and the Azure CLI's Python packages (PyJWT,
 cryptography, certifi); Wolfi 0 / 0.
