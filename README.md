@@ -1,7 +1,7 @@
 # Percona Server for MySQL 9.7 on Wolfi
 
-Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9.7 from source as Wolfi apk packages
-(melange) and assembles four container images from them (apko). Not an official Percona image.
+Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9.7, and the PMM client 3, from source as Wolfi apk packages
+(melange) and assembles the container images from them (apko). Not an official Percona image.
 
 | Image | What it is |
 |---|---|
@@ -9,6 +9,7 @@ Builds Percona Server for MySQL 9.7 (with MySQL Router) and Percona XtraBackup 9
 | `percona-server:9.7-dev` | Drop-in replacement for the official `percona/percona-server:9.7`: same entrypoint script and environment-variable initialisation, plus MySQL Shell and the telemetry agent. |
 | `percona-xtrabackup:9.7` | Drop-in replacement for the official `percona/percona-xtrabackup:9.7` (same entrypoint script), without garbd and the AWS/Azure CLIs (see `docs/deviations.md`). |
 | `percona-mysql-router:9.7` | Drop-in replacement for the official `percona/percona-mysql-router:9.7`: MySQL Router with the same entrypoint (bootstrap from `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`) and MySQL Shell. |
+| `pmm-client:3` | Drop-in replacement for the official `percona/pmm-client:3` (3.10.0), the PMM sidecar of the operators: pmm-agent, pmm-admin, `pmm-agent-entrypoint`, vmagent, the exporters, nomad and the toolkit summaries under `/usr/local/percona/pmm`, user `pmm-agent` (1002). |
 
 ## Packages
 
@@ -25,6 +26,7 @@ Built in this order (`PACKAGES` in `mk/packages.mk`); each recipe is `packages/<
 | `percona-server-docker-scripts` | Entrypoint script and image config from percona-docker; `percona-server-docker-config` (my.cnf) is used by both server images |
 | `percona-xtrabackup-docker-scripts` | Entrypoint script of the XtraBackup image from percona-docker |
 | `percona-mysql-router-docker-scripts` | Entrypoint script of the router image from percona-docker |
+| `pmm-client` | PMM client 3 (pmm-agent, pmm-admin, pmm-agent-entrypoint); subpackages `-vmagent`, `-node-exporter`, `-mysqld-exporter`, `-postgres-exporter`, `-mongodb-exporter`, `-proxysql-exporter`, `-rds-exporter`, `-azure-exporter`, `-valkey-exporter`, `-nomad`, `-tools` (Go, every repository at the commit of the PMM release; `-tools` needs `percona-toolkit`) |
 
 Every version, commit and checksum is pinned in `versions/9.7.yaml`; every tool runs as a digest-pinned container
 (`versions/tools.yaml`).
@@ -44,10 +46,11 @@ template or lock file changed or its digest is not in the registry. It re-locks 
 matches the apks (commit the rewritten lock file).
 
     scripts/build.sh -n                       # show the plan: BUILD/SKIP for each package and image, with the reason
-    scripts/build.sh                          # build what is needed for all four images
+    scripts/build.sh                          # build what is needed for all images
     scripts/build.sh percona-server           # only the distroless image and the packages it needs
     scripts/build.sh percona-xtrabackup       # only the XtraBackup image (and the server packages it links)
     scripts/build.sh percona-mysql-router     # only the router image (server build, mysqlsh, entrypoint)
+    scripts/build.sh pmm-client               # only the PMM client image (server client, pmm-client)
     scripts/build.sh --dev-keys               # laptop: sign with ~/.config/ps-wolfi-dev
     scripts/build.sh -f                       # rebuild everything
 

@@ -1,0 +1,64 @@
+# pmm-client:@@pmm_version@@ - drop-in replacement for the official percona/pmm-client:3 (percona/pmm
+# build/docker/client/Dockerfile.el9 at pmm_commit, tag v@@pmm_version@@). Built by scripts/apko-build.sh; the package
+# set is pinned by images/pmm-client.lock.json. Differences: docs/deviations.md ("pmm-client" rows).
+contents:
+  repositories:
+    - https://packages.wolfi.dev/os
+  keyring:
+    - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+  packages:
+    - wolfi-baselayout
+    # ubi9-micro base: bash, coreutils; PMM_AGENT_PRERUN_SCRIPT runs through a shell
+    - busybox
+    - bash
+    - coreutils
+    # Dockerfile: COPY /usr/bin/jq tar curl sed grep awk (+ their libraries) and the CA trust store
+    - jq
+    - gnutar
+    - curl
+    - sed
+    - grep
+    - gawk
+    - ca-certificates-bundle
+    # Dockerfile: COPY /usr/bin/mysql* (percona-server-client from the ps-80 repository); here this project's client
+    - percona-server-client
+    # Dockerfile: COPY /usr/bin/perl* /usr/share/perl5 (the interpreter and its core modules only: the perl-DBI etc.
+    # rpms of the builder stage live in /usr/lib64/perl5/vendor_perl, which is not copied); perl modules the toolkit
+    # needs come with percona-toolkit
+    - perl
+    # pmm-agent, pmm-admin, pmm-agent-entrypoint, vmagent, the exporters, nomad and the toolkit summaries
+    # (/usr/local/percona/pmm, installed as install_tarball does with PMM_USER=pmm-agent PMM_GROUP=root)
+    - pmm-client
+    - percona-toolkit
+
+# Dockerfile: groupadd -g 1002 pmm-agent; useradd -u 1002 -g pmm-agent -s /sbin/nologin -d /usr/local/percona/pmm
+# -c "PMM Client User" pmm-agent; USER pmm-agent
+accounts:
+  groups:
+    - groupname: pmm-agent
+      gid: 1002
+  users:
+    - username: pmm-agent
+      uid: 1002
+      gid: 1002
+      homedir: /usr/local/percona/pmm
+      shell: /sbin/nologin
+  run-as: "1002"
+
+entrypoint:
+  command: /usr/local/percona/pmm/bin/pmm-agent-entrypoint
+work-dir: /usr/local/percona/pmm/
+
+environment:
+  PATH: /usr/local/percona/pmm/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Dockerfile LABELs (org.opencontainers.image.*); created comes from apko's build date
+annotations:
+  org.opencontainers.image.title: Percona Monitoring and Management Client
+  org.opencontainers.image.description: PMM client @@pmm_version@@ (pmm-agent, pmm-admin, vmagent, exporters) built from source on Wolfi (drop-in for percona/pmm-client:3). Not an official Percona image.
+  org.opencontainers.image.version: "@@pmm_version@@"
+  org.opencontainers.image.licenses: AGPL-3.0-only
+  org.opencontainers.image.url: https://docs.percona.com/percona-monitoring-and-management
+
+archs:
+  - x86_64

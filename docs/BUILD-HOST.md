@@ -613,6 +613,26 @@ call (`python3`, `curl`, `mysqlrouter_passwd`), the entrypoint refusing to start
 against a three-member InnoDB Cluster (built with the -dev image, `tests/image/gr-lib.bash` `gr_cluster`): 6446
 reaches the primary, 6447 a secondary, a write through 6446 is read through 6447, 6447 refuses writes.
 
+## PMM client (`pmm-client`, `make test-pmm-client`)
+
+`packages/pmm-client` builds what PMM's `build/scripts/build-client-binary` (percona/pmm at `pmm_commit`, tag
+v3.10.0) puts into the client tarball, each Go component at the commit of the release (`pmm_*` keys of the version
+file: the gitlinks of Percona-Lab/pmm-submodules v3.10.0, and vmagent/nomad/redis_exporter from `build/scripts/vars`),
+with the Go commands of each upstream Makefile target and the version stamps the official binaries print. One build,
+twelve repositories (module downloads need the network; nomad is the largest, about 160 MB). Subpackages install
+`/usr/local/percona/pmm` as `install_tarball` does (owner 1002:0). `pmm-client-tools` depends on `percona-toolkit`
+(pt-summary, pt-mysql-summary): build that package first, or the `melange test` of `pmm-client` cannot resolve it.
+
+    make pkg-pmm-client
+    make test-pmm-client IMAGE=localhost:5000/percona-server:9.7-dev PMM_CLIENT_IMAGE=localhost:5000/pmm-client:3 report
+
+`tests/image/pmm-client.bats` (5 tests, about 3 minutes, docker only): every binary's version; user 1002, working
+directory, ownership of the layout and the tools the official Dockerfile copies (jq, tar, curl, sed, grep, awk, mysql,
+perl); the entrypoint with `PMM_AGENT_SETUP=1` against an unreachable server (setup fails with "Failed to register
+pmm-agent on PMM Server", no panic) and `pmm-admin status` without an agent; node_exporter, vmagent, postgres_exporter
+and valkey_exporter serving `/metrics`; mysqld_exporter scraping a server started from the -dev image (`mysql_up 1`).
+The same commands were checked against the official `percona/pmm-client:3.10.0`.
+
 ## Compatibility diff against the official image (`make test-compat`)
 
 The official `percona/percona-server:9.7` (digest `official_ps_image` in `versions/9.7.yaml`) wins: every runtime

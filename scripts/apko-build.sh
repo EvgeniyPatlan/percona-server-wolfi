@@ -9,7 +9,8 @@
 #      out/results/<name>.digest (compare runs with `scripts/verify-repro.sh images`).
 # Tags: percona-server:<series>, :<ps_version>-<ps_release> (+ -<BUILD_ID> when set); the -dev image is the same
 # repository with a -dev suffix; percona-xtrabackup:<series>, :<pxb_version>-<pxb_release>;
-# percona-mysql-router:<series>, :<ps_version>-<ps_release> (the router is built from the server tree).
+# percona-mysql-router:<series>, :<ps_version>-<ps_release> (the router is built from the server tree);
+# pmm-client:<major>, :<pmm_version> (as the official percona/pmm-client:3 / :3.10.0).
 # Reproducible inputs: build date from source_date_epoch, VCS autodetection off, the revision annotation is the last
 # commit that touched the build inputs or images/*.tmpl (<sha>-dirty when those have uncommitted changes; RELEASE=1
 # refuses that unless ALLOW_DIRTY=1).
@@ -21,7 +22,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib/keys.sh"
 cd "$here/.."
 
-usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router> [--no-publish]"; }
+usage() { die "usage: apko-build.sh <percona-server|percona-server-dev|percona-xtrabackup|percona-mysql-router|pmm-client> [--no-publish]"; }
 (($#)) || usage
 name=$1
 shift
@@ -43,6 +44,7 @@ series=$(v ps_version | cut -d. -f1-2)
 # Rules: no shell/apk and no perl/python in the distroless image; mysqlsh (+ the -jit blob, ruling R4) and the telemetry agent only in
 # -dev (and mysqlsh, by owner ruling, in the router image); percona-xtrabackup-docker-scripts and percona-telemetry-agent
 # never together (both ship /call-home.sh). The router image has no telemetry agent and no other image's scripts.
+# The PMM client image has no server, mysqlsh, telemetry agent or docker scripts (only the client and the toolkit).
 shells='busybox[a-z0-9-]*|bash|dash|toybox|mksh|zsh|oksh|[a-z0-9-]*-binsh|apk-tools[a-z0-9-]*'
 dev_only='percona-mysql-shell[a-z0-9-]*|percona-telemetry-agent'
 # distroless only: no script interpreters either. percona-server-scripts (mysqld_safe, ps-admin, ...) and Wolfi's
@@ -56,6 +58,8 @@ case $name in
   percona-xtrabackup) repo_name=percona-xtrabackup suffix='' full=$(v pxb_version)-$(v pxb_release) forbid=$dev_only ;;
   percona-mysql-router) repo_name=percona-mysql-router suffix='' full=$ps_full
     forbid='percona-telemetry-agent|percona-server-docker-scripts|percona-xtrabackup-docker-scripts|percona-server-server' ;;
+  pmm-client) repo_name=pmm-client suffix='' full=$(v pmm_version) series=$(v pmm_version | cut -d. -f1)
+    forbid="$dev_only|percona-server-server|percona-server-docker-scripts|percona-xtrabackup-docker-scripts|percona-mysql-router" ;;
   *) die "unknown image: $name" ;;
 esac
 

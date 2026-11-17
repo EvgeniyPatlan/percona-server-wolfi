@@ -103,3 +103,45 @@ official_pxb_image: "docker.io/percona/percona-xtrabackup@sha256:07e883d6aab312b
 official_router_image: "docker.io/percona/percona-mysql-router@sha256:a1ecf51e0688b8a6e5e9b4f344d6f255585836a4f64e0ccd4a02df9cdf773296"
 # previous 9.x image: percona/percona-server:9.7.2-2 (no 9.6/9.5 tags exist on Docker Hub)
 official_ps_prev_image: "docker.io/percona/percona-server@sha256:47f8f2f5bb3e66f597525ad9accd1ec49d377df02b0519b9f6819a0cdc78a7a2"
+
+# --- PMM client 3 (image percona/pmm-client:3) ---
+# Release v3.10.0 = Percona-Lab/pmm-submodules tag v3.10.0 (tag object 456dc60c..., commit d1e653f5...); every component
+# below is the gitlink of that commit (exporters, toolkit) or the hash in build/scripts/vars of percona/pmm at pmm_commit
+# (vmagent, nomad, redis_exporter). The build scripts (build/scripts/build-client-binary) are replicated by the
+# pmm-client recipe; docs/deviations.md "pmm-client" rows.
+pmm_version: "3.10.0"
+pmm_submodules_commit: "d1e653f515b0981a8b8a5a721604b755b5e33af3"
+# percona/pmm tag v3.10.0 (tag object 13f560eb...), peeled; committer time 2026-10-21T17:01:54Z
+pmm_commit: "378dbc37c0e0cf47dbf996d8c707ef0f3eb3ff23"
+pmm_source_date_epoch: "1792602114"
+# VERSION file of each exporter at its pinned commit (stamped as version.Version, as upstream's `cat VERSION`)
+pmm_node_exporter_commit: "bd0c88fe77664710a033eba9cf3991238a20fe20"
+pmm_node_exporter_version: "1.8.2"
+pmm_mysqld_exporter_commit: "ef03189cf1ab3e3cff77847b1f05ad2766816eeb"
+pmm_mysqld_exporter_version: "0.17.2"
+pmm_postgres_exporter_commit: "a0e1e3be9dc3c83dab694f80be3b1245db9b6405"
+pmm_postgres_exporter_version: "0.15.0"
+pmm_mongodb_exporter_commit: "e2dd9bba063df6bae562803bf9eb6363e8de9a70"
+# VERSION file at that commit; the binary is stamped with `git describe --abbrev=0` of the submodule instead
+# (build-client-binary COMPONENT_VERSION), which the official 3.10.0 binary reports as v0.45.0
+pmm_mongodb_exporter_tree_version: "v0.54.0"
+pmm_mongodb_exporter_version: "v0.45.0"
+pmm_proxysql_exporter_commit: "622a4946e8075c822663ec2b6f6a40b3c826ff40"
+pmm_proxysql_exporter_version: "1.1.3"
+pmm_rds_exporter_commit: "24b256b6b4ba9951be5eea9375027da89f308a8a"
+pmm_rds_exporter_version: "0.7.5"
+pmm_azure_exporter_commit: "d81fabbf1c62f9e876838860fbb972b13a554092"
+pmm_azure_exporter_version: "0.2.0"
+# VictoriaMetrics tag pmm-6401-v1.154.0 (tag object 1868bf30...), peeled
+pmm_vmagent_commit: "6cfaaeb220bda44269cea24ac9378cc3147594e9"
+pmm_vmagent_version: "1.154.0"
+# hashicorp/nomad tag v2.0.7 (lightweight)
+pmm_nomad_commit: "9dcbdc5e64ecc4ec63e42b225af729c87c87cf83"
+pmm_nomad_version: "2.0.7"
+# oliver006/redis_exporter tag v1.92.1 (lightweight), shipped as valkey_exporter
+pmm_redis_exporter_commit: "09a71547771a74070f2885ca085d3c237972065c"
+pmm_redis_exporter_version: "1.92.1"
+# percona/percona-toolkit branch pmm-3.10.0 (Makefile.PL VERSION 3.7.1): source of pt-mongodb-summary and pt-pg-summary
+pmm_toolkit_commit: "bdc6b45717a2d382c507afc006a87ebe5429f1e1"
+# percona/pmm-client:3 == 3.10.0 (index digest, 2026-11-16)
+official_pmm_client_image: "docker.io/percona/pmm-client@sha256:b407188b183bc61ab202914f2128f171dd2d0cd411396a05bb92f3e73348a416"

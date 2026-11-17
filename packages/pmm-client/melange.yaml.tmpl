@@ -1,0 +1,541 @@
+# PMM client @@pmm_version@@: what build/scripts/build-client-binary (percona/pmm at pmm_commit) puts into the
+# pmm-client tarball and install_tarball installs under /usr/local/percona/pmm, built from source. One recipe, one
+# subpackage per upstream repository; `pmm-client` itself (pmm-agent, pmm-admin, pmm-agent-entrypoint and the
+# directory layout) depends on all of them, as the tarball holds all of them.
+#
+# Every Go command below is the one upstream's Makefile target runs (named per step), called directly instead of
+# through make: the Makefiles shell out to `git` and `date` for the version stamps, which are pinned here instead
+# (versions/9.7.yaml). Added for every binary, as in the other Go recipe: -trimpath and -buildvcs=false (no build paths
+# or VCS state in the binaries; reproducible), GOTOOLCHAIN=local, -mod=readonly. Differences: docs/deviations.md.
+package:
+  name: pmm-client
+  version: "@@pmm_version@@"
+  epoch: 0
+  description: Percona Monitoring and Management client @@pmm_version@@ (pmm-agent, pmm-admin and the exporters)
+  # melange records licenses per recipe: pmm (pmm-agent, pmm-admin) AGPL-3.0; the exporters and vmagent Apache-2.0;
+  # redis_exporter (valkey_exporter) MIT; nomad BUSL-1.1; the toolkit summaries GPL-2.0. Each subpackage ships its
+  # repository's license file under /usr/share/licenses/<subpackage>/.
+  copyright:
+    - license: AGPL-3.0-only AND Apache-2.0 AND MIT AND BUSL-1.1 AND GPL-2.0-only
+  dependencies:
+    runtime:
+      - pmm-client-vmagent
+      - pmm-client-node-exporter
+      - pmm-client-mysqld-exporter
+      - pmm-client-postgres-exporter
+      - pmm-client-mongodb-exporter
+      - pmm-client-proxysql-exporter
+      - pmm-client-rds-exporter
+      - pmm-client-azure-exporter
+      - pmm-client-valkey-exporter
+      - pmm-client-nomad
+      - pmm-client-tools
+
+environment:
+  contents:
+    repositories:
+      - https://packages.wolfi.dev/os
+    keyring:
+      - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+    packages:
+      - wolfi-base
+      - build-base
+      - busybox
+      - bash
+      - git
+      - ca-certificates-bundle
+      # static pmm-agent (CGO_ENABLED=1 -extldflags -static): libc.a is in glibc-dev
+      - glibc-dev
+      # pmm and the toolkit say `go 1.27.x` in go.mod, the others older; GOTOOLCHAIN=local keeps it from downloading
+      - go-1.27
+
+pipeline:
+  # Sources: every repository at its pinned commit (fetched by hash, checked), as pmm-submodules v@@pmm_version@@
+  # and build/scripts/vars pin them.
+  - name: Fetch sources (pinned commits)
+    runs: |
+      set -eu
+      get() {
+        mkdir "$1"
+        git -C "$1" init -q
+        git -C "$1" fetch -q --depth 1 "$2" "$3"
+        git -C "$1" checkout -q FETCH_HEAD
+        test "$(git -C "$1" rev-parse HEAD)" = "$3"
+      }
+      get pmm https://github.com/percona/pmm @@pmm_commit@@
+      get node_exporter https://github.com/percona/node_exporter @@pmm_node_exporter_commit@@
+      get mysqld_exporter https://github.com/percona/mysqld_exporter @@pmm_mysqld_exporter_commit@@
+      get postgres_exporter https://github.com/percona/postgres_exporter @@pmm_postgres_exporter_commit@@
+      get mongodb_exporter https://github.com/percona/mongodb_exporter @@pmm_mongodb_exporter_commit@@
+      get proxysql_exporter https://github.com/percona/proxysql_exporter @@pmm_proxysql_exporter_commit@@
+      get rds_exporter https://github.com/percona/rds_exporter @@pmm_rds_exporter_commit@@
+      get azure_metrics_exporter https://github.com/percona/azure_metrics_exporter @@pmm_azure_exporter_commit@@
+      get vmagent https://github.com/VictoriaMetrics/VictoriaMetrics @@pmm_vmagent_commit@@
+      get nomad https://github.com/hashicorp/nomad @@pmm_nomad_commit@@
+      get redis_exporter https://github.com/oliver006/redis_exporter @@pmm_redis_exporter_commit@@
+      get percona-toolkit https://github.com/percona/percona-toolkit @@pmm_toolkit_commit@@
+      # the version stamps below are pinned, so they must match the trees
+      test "$(cat node_exporter/VERSION)" = "@@pmm_node_exporter_version@@"
+      test "$(cat mysqld_exporter/VERSION)" = "@@pmm_mysqld_exporter_version@@"
+      test "$(cat postgres_exporter/VERSION)" = "@@pmm_postgres_exporter_version@@"
+      test "$(cat mongodb_exporter/VERSION)" = "@@pmm_mongodb_exporter_tree_version@@"
+      test "$(cat proxysql_exporter/VERSION)" = "@@pmm_proxysql_exporter_version@@"
+      test "$(cat rds_exporter/VERSION)" = "@@pmm_rds_exporter_version@@"
+      test "$(cat azure_metrics_exporter/VERSION)" = "@@pmm_azure_exporter_version@@"
+
+  # PMM_RELEASE_* as build-client-binary exports them: version @@pmm_version@@, the full commit, an empty branch;
+  # the timestamp is pmm_commit's committer time instead of `date +%s` (reproducible).
+  - name: Build pmm-agent, pmm-agent-entrypoint, pmm-admin (agent/Makefile release, admin/Makefile release)
+    runs: |
+      set -eu
+      export GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMODCACHE=/var/cache/melange/gomodcache GOOS=linux GOARCH=amd64
+      out=$(pwd)/bin
+      mkdir -p "$out"
+      vf() {
+        printf "%s" "-X 'github.com/percona/pmm/version.ProjectName=$1' \
+          -X 'github.com/percona/pmm/version.Version=@@pmm_version@@' \
+          -X 'github.com/percona/pmm/version.PMMVersion=@@pmm_version@@' \
+          -X 'github.com/percona/pmm/version.Timestamp=@@pmm_source_date_epoch@@' \
+          -X 'github.com/percona/pmm/version.FullCommit=@@pmm_commit@@' \
+          -X 'github.com/percona/pmm/version.Branch='"
+      }
+      cd pmm/agent
+      CGO_ENABLED=1 go build -trimpath -buildvcs=false -ldflags "-extldflags '-static' $(vf pmm-agent)" \
+        -tags 'osusergo netgo static_build' -o "$out/pmm-agent"
+      CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-extldflags '-static' $(vf pmm-agent)" \
+        -tags 'osusergo netgo static_build' -o "$out/pmm-agent-entrypoint" ./cmd/pmm-agent-entrypoint
+      # the Makefile's own check: the release pmm-agent is static
+      "$out/pmm-agent" --version
+      ldd "$out/pmm-agent" 2>&1 | grep -Fq 'not a dynamic executable'
+      cd ../admin
+      CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "$(vf pmm-admin)" -o "$out/pmm-admin" ./cmd/pmm-admin/
+
+  # Prometheus-style exporters: GO_BUILD_LDFLAGS of each Makefile (version.Version from VERSION, BuildUser empty,
+  # -s -w). Upstream builds them from tarballs outside any git checkout, so its `git rev-parse HEAD` and
+  # `git describe` stamps (Revision, Branch) come out empty (the official binaries print "branch: , revision:
+  # unknown"); they stay empty here. BuildDate is the pmm commit time, not `date`. CGO_ENABLED=0 (build-client-binary
+  # exports it).
+  - name: Build the exporters (Makefile release targets; mongodb_exporter make build)
+    runs: |
+      set -eu
+      export GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMODCACHE=/var/cache/melange/gomodcache GOOS=linux GOARCH=amd64
+      export CGO_ENABLED=0
+      out=$(pwd)/bin
+      date=$(date -u -d "@@@pmm_source_date_epoch@@" +%FT%T%z)
+      pv() {
+        p=github.com/prometheus/common/version
+        printf "%s" "-X $p.Version=$(cat VERSION) -X $p.Revision= -X $p.Branch= -X $p.BuildUser= -X $p.BuildDate=$date -s -w"
+      }
+      (cd node_exporter && go build -trimpath -buildvcs=false -ldflags="$(pv)" -o "$out/node_exporter")
+      (cd mysqld_exporter && go build -trimpath -buildvcs=false -ldflags "$(pv)" -o "$out/mysqld_exporter")
+      (cd postgres_exporter && go build -trimpath -buildvcs=false -ldflags="$(pv)" -o "$out/postgres_exporter" ./cmd/postgres_exporter)
+      (cd proxysql_exporter && go build -trimpath -buildvcs=false -ldflags="$(pv)" -o "$out/proxysql_exporter")
+      (cd rds_exporter && go build -trimpath -buildvcs=false -ldflags="$(pv)" -o "$out/rds_exporter")
+      # build-client-binary renames azure_metrics_exporter's result to azure_exporter (the Makefile's -o)
+      (cd azure_metrics_exporter && go build -trimpath -buildvcs=false -ldflags="$(pv)" -o "$out/azure_exporter")
+      # mongodb_exporter: main.* stamps; COMPONENT_VERSION / PMM_RELEASE_FULLCOMMIT as build-client-binary computes
+      # them from the submodule (nearest tag, commit); COMPONENT_BRANCH (not printed) is the submodule's branch
+      gov=$(go version | cut -d " " -f3)
+      (cd mongodb_exporter && go build -trimpath -buildvcs=false \
+        -ldflags="-X main.version=@@pmm_mongodb_exporter_version@@ -X main.buildDate=$date -X main.commit=@@pmm_mongodb_exporter_commit@@ -X main.Branch=main -X main.GoVersion=$gov -s -w" \
+        -o "$out/mongodb_exporter")
+
+  # build-client-binary's generic branch (`go build -o bin/vmagent ./app/vmagent`, no ldflags) and its
+  # redis_exporter branch (`go build .`, shipped as valkey_exporter); both CGO_ENABLED=0.
+  - name: Build vmagent and valkey_exporter
+    runs: |
+      set -eu
+      export GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMODCACHE=/var/cache/melange/gomodcache GOOS=linux GOARCH=amd64
+      export CGO_ENABLED=0
+      out=$(pwd)/bin
+      (cd vmagent && go build -trimpath -buildvcs=false -o "$out/vmagent" ./app/vmagent)
+      (cd redis_exporter && go build -trimpath -buildvcs=false -o "$out/valkey_exporter" .)
+
+  # nomad: `TARGETS=linux_amd64 make deps release GO_TAGS='ui codegen_generated release hashicorpmetrics'`, i.e. the
+  # GNUmakefile's pkg/linux_amd64/nomad rule: CGO_ENABLED=1 (the GNUmakefile sets it), GOFIPS140=off, -trimpath.
+  # Its GitCommit and BuildDate come from `git` in a tree that is not a checkout upstream, so they are empty (the
+  # official binary prints only "Nomad v@@pmm_nomad_version@@"); empty here too. `make deps` only installs code
+  # generators (the release build uses the generated files committed at the tag, the UI included); it is not run.
+  - name: Build nomad (GNUmakefile pkg/linux_amd64/nomad)
+    runs: |
+      set -eu
+      export GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMODCACHE=/var/cache/melange/gomodcache GOOS=linux GOARCH=amd64
+      out=$(pwd)/bin
+      cd nomad
+      CGO_ENABLED=1 GOFIPS140=off go build -trimpath -buildvcs=false \
+        -ldflags "-X github.com/hashicorp/nomad/version.GitCommit= -X github.com/hashicorp/nomad/version.BuildDate=" \
+        -tags "ui codegen_generated release hashicorpmetrics" -o "$out/nomad"
+
+  # percona-toolkit: build-client-binary builds the two Go summaries (`go build .`, CGO_ENABLED=0, no ldflags) from
+  # the PMM-pinned toolkit commit; pt-summary and pt-mysql-summary (scripts) come from the percona-toolkit package.
+  - name: Build pt-mongodb-summary and pt-pg-summary
+    runs: |
+      set -eu
+      export GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMODCACHE=/var/cache/melange/gomodcache GOOS=linux GOARCH=amd64
+      export CGO_ENABLED=0
+      out=$(pwd)/bin
+      for t in pt-mongodb-summary pt-pg-summary; do
+        (cd "percona-toolkit/src/go/$t" && go build -trimpath -buildvcs=false -o "$out/$t" .)
+      done
+
+  # install_tarball with PMM_USER=pmm-agent PMM_GROUP=root (the Dockerfile's call): every directory 0755 and file
+  # 0755 owned by pmm-agent:root, config/pmm-agent.yaml created empty 0660. pmm-agent is uid/gid 1002 in the image
+  # (Dockerfile useradd); owners are numeric here. This package carries bin/ and the directory tree; each
+  # subpackage installs its own binary and data files.
+  - name: Install (pmm-client)
+    runs: |
+      set -eu
+      p="${{targets.destdir}}/usr/local/percona/pmm"
+      i() { install -o 1002 -g 0 "$@"; }
+      for dir in bin tools exporters config collectors collectors/textfile-collector collectors/custom-queries \
+        collectors/custom-queries/mysql collectors/custom-queries/postgresql; do
+        i -m 0755 -d "$p/$dir"
+      done
+      for r in low medium high; do
+        i -m 0755 -d "$p/collectors/textfile-collector/$r-resolution" \
+          "$p/collectors/custom-queries/mysql/$r-resolution" "$p/collectors/custom-queries/postgresql/$r-resolution"
+      done
+      for b in pmm-admin pmm-agent pmm-agent-entrypoint; do i -m 0755 "bin/$b" "$p/bin/$b"; done
+      i -m 0660 /dev/null "$p/config/pmm-agent.yaml"
+      # Dockerfile.el9: install -d -o pmm-agent -g pmm-agent -m 0775 /usr/local/percona/pmm
+      chown 1002:1002 "$p" && chmod 0775 "$p"
+      install -Dm0644 pmm/LICENSE "${{targets.destdir}}/usr/share/licenses/pmm-client/LICENSE"
+      # Dockerfile.el9: COPY LICENSE /licenses/ (build/docker/client/LICENSE)
+      install -Dm0644 pmm/build/docker/client/LICENSE "${{targets.destdir}}/licenses/LICENSE"
+
+  - name: Check ownership (pmm-client)
+    runs: |
+      p="${{targets.destdir}}/usr/local/percona/pmm"
+      test "$(stat -c '%u:%g:%a' "$p")" = 1002:1002:775
+      test "$(stat -c '%u:%g:%a' "$p/bin/pmm-agent")" = 1002:0:755
+      test "$(stat -c '%u:%g:%a' "$p/config/pmm-agent.yaml")" = 1002:0:660
+
+  # the binaries of every subpackage are still in bin/ of the workspace: scan them too
+  - name: Build-path leak scan
+    runs: |
+      bash build-tools/check-build-path-leaks.sh "${{targets.destdir}}" "$(pwd)"
+      bash build-tools/check-build-path-leaks.sh bin "$(pwd)"
+
+subpackages:
+  - name: pmm-client-vmagent
+    description: VictoriaMetrics vmagent @@pmm_vmagent_version@@ (PMM build, tag pmm-6401-v@@pmm_vmagent_version@@)
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}"
+          install -o 1002 -g 0 -Dm0755 bin/vmagent "$s/usr/local/percona/pmm/exporters/vmagent"
+          install -Dm0644 vmagent/LICENSE "$s/usr/share/licenses/pmm-client-vmagent/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/vmagent -version
+            /usr/local/percona/pmm/exporters/vmagent -help 2>&1 | grep -q remoteWrite.url
+
+  - name: pmm-client-node-exporter
+    description: Percona node_exporter @@pmm_node_exporter_version@@ for PMM, with the textfile collector examples
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}" p=usr/local/percona/pmm
+          install -o 1002 -g 0 -Dm0755 bin/node_exporter "$s/$p/exporters/node_exporter"
+          for r in low medium high; do
+            install -o 1002 -g 0 -Dm0755 node_exporter/example.prom "$s/$p/collectors/textfile-collector/$r-resolution/example.prom"
+          done
+          install -Dm0644 node_exporter/LICENSE "$s/usr/share/licenses/pmm-client-node-exporter/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/node_exporter --version 2>&1 | grep -F "version @@pmm_node_exporter_version@@"
+            test -f /usr/local/percona/pmm/collectors/textfile-collector/high-resolution/example.prom
+
+  - name: pmm-client-mysqld-exporter
+    description: Percona mysqld_exporter @@pmm_mysqld_exporter_version@@ for PMM, with its custom queries
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}" q=usr/local/percona/pmm/collectors/custom-queries/mysql
+          install -o 1002 -g 0 -Dm0755 bin/mysqld_exporter "$s/usr/local/percona/pmm/exporters/mysqld_exporter"
+          for r in low medium high; do
+            install -o 1002 -g 0 -Dm0755 mysqld_exporter/queries-mysqld.yml "$s/$q/$r-resolution/queries-mysqld.yml"
+          done
+          install -o 1002 -g 0 -Dm0755 mysqld_exporter/queries-mysqld-group-replication.yml \
+            "$s/$q/high-resolution/queries-mysqld-group-replication.yml"
+          install -Dm0644 mysqld_exporter/LICENSE "$s/usr/share/licenses/pmm-client-mysqld-exporter/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/mysqld_exporter --version 2>&1 | grep -F "version @@pmm_mysqld_exporter_version@@"
+            test -f /usr/local/percona/pmm/collectors/custom-queries/mysql/high-resolution/queries-mysqld-group-replication.yml
+
+  - name: pmm-client-postgres-exporter
+    description: Percona postgres_exporter @@pmm_postgres_exporter_version@@ for PMM, with its custom queries
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}" q=usr/local/percona/pmm/collectors/custom-queries/postgresql
+          install -o 1002 -g 0 -Dm0755 bin/postgres_exporter "$s/usr/local/percona/pmm/exporters/postgres_exporter"
+          for r in low medium high; do
+            install -o 1002 -g 0 -Dm0755 postgres_exporter/example-queries-postgres.yml "$s/$q/$r-resolution/example-queries-postgres.yml"
+          done
+          install -o 1002 -g 0 -Dm0755 postgres_exporter/queries-postgres-uptime.yml "$s/$q/high-resolution/queries-postgres-uptime.yml"
+          install -o 1002 -g 0 -Dm0755 postgres_exporter/queries-hr.yml "$s/$q/high-resolution/queries-hr.yml"
+          install -o 1002 -g 0 -Dm0755 postgres_exporter/queries-mr.yaml "$s/$q/medium-resolution/queries-mr.yaml"
+          install -o 1002 -g 0 -Dm0755 postgres_exporter/queries-lr.yaml "$s/$q/low-resolution/queries-lr.yaml"
+          install -Dm0644 postgres_exporter/LICENSE "$s/usr/share/licenses/pmm-client-postgres-exporter/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/postgres_exporter --version 2>&1 | grep -F "version @@pmm_postgres_exporter_version@@"
+            test -f /usr/local/percona/pmm/collectors/custom-queries/postgresql/low-resolution/queries-lr.yaml
+
+  - name: pmm-client-mongodb-exporter
+    description: Percona mongodb_exporter @@pmm_mongodb_exporter_version@@ for PMM
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}"
+          install -o 1002 -g 0 -Dm0755 bin/mongodb_exporter "$s/usr/local/percona/pmm/exporters/mongodb_exporter"
+          install -Dm0644 mongodb_exporter/LICENSE "$s/usr/share/licenses/pmm-client-mongodb-exporter/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/mongodb_exporter --version 2>&1 | grep -F "@@pmm_mongodb_exporter_version@@"
+
+  - name: pmm-client-proxysql-exporter
+    description: Percona proxysql_exporter @@pmm_proxysql_exporter_version@@ for PMM
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}"
+          install -o 1002 -g 0 -Dm0755 bin/proxysql_exporter "$s/usr/local/percona/pmm/exporters/proxysql_exporter"
+          install -Dm0644 proxysql_exporter/LICENSE "$s/usr/share/licenses/pmm-client-proxysql-exporter/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/proxysql_exporter --version 2>&1 | grep -F "version @@pmm_proxysql_exporter_version@@"
+
+  - name: pmm-client-rds-exporter
+    description: Percona rds_exporter @@pmm_rds_exporter_version@@ for PMM
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}"
+          install -o 1002 -g 0 -Dm0755 bin/rds_exporter "$s/usr/local/percona/pmm/exporters/rds_exporter"
+          install -Dm0644 rds_exporter/LICENSE "$s/usr/share/licenses/pmm-client-rds-exporter/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/rds_exporter --version 2>&1 | grep -F "version @@pmm_rds_exporter_version@@"
+
+  - name: pmm-client-azure-exporter
+    description: Percona azure_metrics_exporter @@pmm_azure_exporter_version@@ for PMM (installed as azure_exporter)
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}"
+          install -o 1002 -g 0 -Dm0755 bin/azure_exporter "$s/usr/local/percona/pmm/exporters/azure_exporter"
+          install -Dm0644 azure_metrics_exporter/LICENSE "$s/usr/share/licenses/pmm-client-azure-exporter/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/azure_exporter --version 2>&1 | grep -F "version @@pmm_azure_exporter_version@@"
+
+  - name: pmm-client-valkey-exporter
+    description: redis_exporter @@pmm_redis_exporter_version@@ for PMM (installed as valkey_exporter)
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}"
+          install -o 1002 -g 0 -Dm0755 bin/valkey_exporter "$s/usr/local/percona/pmm/exporters/valkey_exporter"
+          install -Dm0644 redis_exporter/LICENSE "$s/usr/share/licenses/pmm-client-valkey-exporter/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/exporters/valkey_exporter -version 2>&1 | grep -i redis_exporter
+
+  - name: pmm-client-nomad
+    description: HashiCorp Nomad @@pmm_nomad_version@@ as shipped in the PMM client (tools/nomad)
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}"
+          install -o 1002 -g 0 -Dm0755 bin/nomad "$s/usr/local/percona/pmm/tools/nomad"
+          install -Dm0644 nomad/LICENSE "$s/usr/share/licenses/pmm-client-nomad/LICENSE"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            /usr/local/percona/pmm/tools/nomad version | grep -F "Nomad v@@pmm_nomad_version@@"
+
+  # tools/: pt-summary and pt-mysql-summary are links to this repository's percona-toolkit package (the tarball
+  # copies them from the PMM-pinned toolkit tree); pt-mongodb-summary and pt-pg-summary are built above.
+  - name: pmm-client-tools
+    description: Percona Toolkit summaries in the PMM client tools directory
+    dependencies:
+      runtime:
+        - percona-toolkit
+    pipeline:
+      - runs: |
+          set -eu
+          s="${{targets.subpkgdir}}" t=usr/local/percona/pmm/tools
+          install -o 1002 -g 0 -Dm0755 bin/pt-mongodb-summary "$s/$t/pt-mongodb-summary"
+          install -o 1002 -g 0 -Dm0755 bin/pt-pg-summary "$s/$t/pt-pg-summary"
+          ln -s /usr/bin/pt-summary "$s/$t/pt-summary"
+          ln -s /usr/bin/pt-mysql-summary "$s/$t/pt-mysql-summary"
+          install -Dm0644 percona-toolkit/COPYING "$s/usr/share/licenses/pmm-client-tools/COPYING"
+    test:
+      environment:
+        contents:
+          repositories:
+            - https://packages.wolfi.dev/os
+          keyring:
+            - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+          packages:
+            - wolfi-base
+            - busybox
+            - bash
+      pipeline:
+        - runs: |
+            t=/usr/local/percona/pmm/tools
+            $t/pt-mongodb-summary --version
+            $t/pt-pg-summary --version
+            $t/pt-summary --version
+            $t/pt-mysql-summary --version
+
+test:
+  environment:
+    contents:
+      repositories:
+        - https://packages.wolfi.dev/os
+      keyring:
+        - https://packages.wolfi.dev/os/wolfi-signing.rsa.pub
+      packages:
+        - wolfi-base
+        - busybox
+        - bash
+        - pmm-client
+  pipeline:
+    - name: versions
+      runs: |
+        b=/usr/local/percona/pmm/bin
+        $b/pmm-agent --version 2>&1 | grep -F "Version: @@pmm_version@@"
+        $b/pmm-agent --version 2>&1 | grep -F "@@pmm_commit@@"
+        $b/pmm-admin --version 2>&1 | grep -F "Version: @@pmm_version@@"
+        $b/pmm-agent-entrypoint --help > /dev/null 2>&1
+    - name: setup fails cleanly without a server
+      runs: |
+        cd /tmp
+        ! /usr/local/percona/pmm/bin/pmm-agent setup --config-file=/tmp/a.yaml --server-address=127.0.0.1:9 \
+          --server-insecure-tls --paths-base=/usr/local/percona/pmm 127.0.0.1 generic test > out.txt 2>&1
+        cat out.txt
+    - name: layout
+      runs: |
+        p=/usr/local/percona/pmm
+        for f in bin/pmm-agent bin/pmm-admin exporters/node_exporter exporters/mysqld_exporter exporters/vmagent \
+          exporters/postgres_exporter exporters/mongodb_exporter exporters/proxysql_exporter exporters/rds_exporter \
+          exporters/azure_exporter exporters/valkey_exporter tools/nomad tools/pt-pg-summary tools/pt-mongodb-summary; do
+          test -x "$p/$f"
+        done
+        test -f $p/config/pmm-agent.yaml
+
+update:
+  enabled: false

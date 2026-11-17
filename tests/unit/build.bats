@@ -48,12 +48,13 @@ have_apks() {
 @test "fresh tree: every package and image is planned, a dry run calls nothing" {
   run "$S" -n
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 10 ]
+  [ "$(grep -c '^BUILD package' <<< "$output")" -eq 11 ]
   [[ $output == *"BUILD package percona-server (no $T/repo/x86_64/percona-server-9.7.2.2-r0.apk)"* ]]
   [[ $output == *"BUILD image percona-server (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-server-dev (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-xtrabackup (no lock file (first build))"* ]]
   [[ $output == *"BUILD image percona-mysql-router (no lock file (first build))"* ]]
+  [[ $output == *"BUILD image pmm-client (no lock file (first build))"* ]]
   [ ! -e "$T/calls" ]
 }
 
@@ -70,16 +71,18 @@ have_apks() {
   [ "${lines[8]}" = "pkg-percona-xtrabackup RELOCK=" ]
   [ "${lines[11]}" = "pkg-percona-xtrabackup-docker-scripts RELOCK=" ]
   [ "${lines[12]}" = "pkg-percona-mysql-router-docker-scripts RELOCK=" ]
-  [ "${lines[13]}" = "registry-up RELOCK=" ]
-  [ "${lines[14]}" = "image-percona-server RELOCK=" ]
-  [ "${lines[15]}" = "image-percona-server-dev RELOCK=" ]
-  [ "${lines[16]}" = "image-percona-xtrabackup RELOCK=" ]
-  [ "${lines[17]}" = "image-percona-mysql-router RELOCK=" ]
+  [ "${lines[13]}" = "pkg-pmm-client RELOCK=" ]
+  [ "${lines[14]}" = "registry-up RELOCK=" ]
+  [ "${lines[15]}" = "image-percona-server RELOCK=" ]
+  [ "${lines[16]}" = "image-percona-server-dev RELOCK=" ]
+  [ "${lines[17]}" = "image-percona-xtrabackup RELOCK=" ]
+  [ "${lines[18]}" = "image-percona-mysql-router RELOCK=" ]
+  [ "${lines[19]}" = "image-pmm-client RELOCK=" ]
   [ -s "$T/stamps/pkg-percona-server" ] && [ -s "$T/stamps/image-percona-xtrabackup" ]
   rm "$T/calls"
   run "$S"
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^SKIP' <<< "$output")" -eq 14 ]
+  [ "$(grep -c '^SKIP' <<< "$output")" -eq 16 ]
   run cat "$T/calls"
   [ "$output" = "registry-up RELOCK=" ]
 }
@@ -136,6 +139,22 @@ have_apks() {
   grep -q "^http://localhost:5000/v2/percona-mysql-router/manifests/sha256:" "$T/curl.log"
 }
 
+@test "pmm-client only: the server packages (client) and pmm-client, no mysqlsh; its own registry repository" {
+  run "$S" -n pmm-client
+  [[ $output == *"BUILD package percona-server ("* ]]
+  [[ $output == *"BUILD package pmm-client ("* ]]
+  [[ $output != *"percona-mysql-shell"* ]]
+  [[ $output != *"percona-telemetry-agent"* ]]
+  [[ $output != *"xtrabackup"* ]]
+  [[ $output != *"router"* ]]
+  [[ $output != *"image percona-server"* ]]
+  have_apks
+  "$S" pmm-client > /dev/null 2>&1
+  run "$S" -n pmm-client
+  [[ $output == *"SKIP  image pmm-client (up to date)"* ]]
+  grep -q "^http://localhost:5000/v2/pmm-client/manifests/sha256:" "$T/curl.log"
+}
+
 @test "xtrabackup only: the server packages it links against, no -dev extras; its own registry repository" {
   run "$S" -n percona-xtrabackup
   [[ $output == *"BUILD package percona-server ("* ]]
@@ -173,7 +192,7 @@ EOF
   STUB_CURL_RC=22 run "$S" -n --images-only
   [[ $output == *"BUILD image percona-server (digest not in localhost:5000)"* ]]
   run "$S" -n -f
-  [ "$(grep -c '(--force)' <<< "$output")" -eq 14 ]
+  [ "$(grep -c '(--force)' <<< "$output")" -eq 16 ]
 }
 
 @test "bad arguments are rejected" {
