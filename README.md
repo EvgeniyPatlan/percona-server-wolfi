@@ -365,18 +365,17 @@ CVE counts as grype / trivy, C = Critical, H = High):
 | PXC backup (`9.7.2-pxc8.7-backup`) | 778 MB / 288 MB, 11 | 506 MB / 148 MB | 235 / 233 (1 / 0 C, 19 H) | 0 / 0 |
 | Binlog Server (`0.4.1`) | 203 MB / 77 MB, 8 | 83 MB / 31 MB | 334 / 339 (1 C, 49 H) | 0 / 0 |
 | Toolkit (`3.7.1-4`) | 433 MB / 151 MB, 7 | 318 MB / 106 MB | 565 / 581 (3 / 1 C, 73 H) | 1 / 0 (perl, Medium) |
-| PMM client (`3.10.0`) | 657 MB / 256 MB, 12 | 772 MB / 306 MB | 195 / 55 (12 / 0 C, 45 / 4 H) | 4 / 0 (1 H) |
+| PMM client (`3.10.0`) | 657 MB / 256 MB, 12 | 772 MB / 306 MB | 195 / 55 (12 / 0 C, 45 / 4 H) | 1 / 0 (perl, Medium) |
 
 Every Wolfi image is a single layer. The PXC trivy count leaves out 6628 Linux kernel CVEs that trivy matches against
 the official image's `kernel-headers` package (grype does not). The operator, Toolkit and PMM client rows are after
 the Go module bumps (`go_bumps` in `versions/9.7.yaml`, 2026-11-18): the official images and the upstream `go.mod`
 pins carry the vulnerable klauspost/compress, golang.org/x/net, golang.org/x/text, grpc, cert-manager, OpenTelemetry,
-go-jose/v4, go-getter and AWS SDK versions; the Wolfi builds raise them to the fixed releases. What remains has no fix
-yet: go-jose/v3 in PMM's nomad (1 High, 2 Medium), a Medium in Wolfi's perl (Toolkit, PMM client, ProxySQL) and one
-High in ProxySQL. Only grype reports these; trivy finds nothing in the Wolfi images. The go-jose/v3 High
-(GHSA-mgcc-cww5-fp2q, a DoS when parsing RSA keys in a JWK) is reachable in nomad (it parses signed tokens, whose header
-can carry a JWK), so it gets no VEX entry: `make scan` stays red for pmm-client until nomad moves to go-jose v4 or v3
-gets a fix (nomad `main` still uses v3.0.5 as of 2026-11-18). The PMM client image is the one Wolfi image
+go-jose/v4, go-getter and AWS SDK versions; the Wolfi builds raise them to the fixed releases. go-jose/v3 in PMM's nomad
+has no fixed release (the fixes are in v4 only), so nomad is built against v3.0.5 with the fixes backported
+(`packages/pmm-client/patches/`, see `docs/deviations.md`). What remains has no fix yet: a Medium in Wolfi's perl
+(Toolkit, PMM client, ProxySQL) and one High in ProxySQL. Only grype reports these; trivy finds nothing in the Wolfi
+images. The PMM client image is the one Wolfi image
 that is larger than the official one.
 
 The CVE gap is mostly the distro base: the official image's High findings are all in RHEL libraries (krb5-libs,

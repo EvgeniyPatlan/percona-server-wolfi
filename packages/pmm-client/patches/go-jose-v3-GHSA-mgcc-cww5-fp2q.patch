@@ -1,0 +1,388 @@
+Subject: go-jose v3.0.5 (nomad): backport the GHSA-mgcc-cww5-fp2q fix and the JSON/CBC-HMAC hardening of v4.1.5/v4.1.6
+Error: grype: GHSA-mgcc-cww5-fp2q (High, DoS when parsing RSA keys in a JWK), GHSA-vvm8-gf78-28g4 and
+  GHSA-4w3g-jfj2-cw2q (Medium, panics in JSON parsing / CBC-HMAC) in /usr/local/percona/pmm/tools/nomad
+Why: nomad (pmm_nomad_commit, and nomad main as of 2026-11-18) requires github.com/go-jose/go-jose/v3 v3.0.5, the last
+  v3 release; the fixes exist only in v4 (v4.1.5, v4.1.6). nomad parses signed tokens with go-jose, and a JWS header
+  can embed a JWK, so the RSA parsing path is reachable. v4 is a different import path, so a version bump is not
+  possible; the recipe builds nomad against this patched copy (go.mod replace).
+  Backported: a0111f8 (jwk.go: MaxRSAModulusBits = 4096, p*q == n check, jwk/epk headers parsed as public keys only;
+  shared.go; jwe.go header sanitising after the recipients), a31af25 (json: nesting depth limit 10000), 6b364f3 and
+  74114c2 (cipher/cbc_hmac: no panic on an invalid key size or empty ciphertext). Not backported: the jws.go reorder
+  of a0111f8 (it moves v4's signature-algorithm allowlist check, which v3 does not have). v3's getJWK helper is kept
+  (its tests use it) and parses public keys only. backport_test.go: the modulus limit (fails on unpatched v3.0.5)
+  and a JWS whose jwk header holds a private key.
+Upstream: https://github.com/go-jose/go-jose/security/advisories/GHSA-mgcc-cww5-fp2q (fixed in v4.1.6 only)
+Drop-when: nomad moves to go-jose v4, or a fixed v3 release exists
+
+diff --git a/backport_test.go b/backport_test.go
+new file mode 100644
+index 0000000..96c1845
+--- /dev/null
++++ b/backport_test.go
+@@ -0,0 +1,57 @@
++package jose
++
++import (
++	"crypto/rand"
++	"crypto/rsa"
++	"encoding/base64"
++	"encoding/json"
++	"math/big"
++	"strings"
++	"testing"
++)
++
++// GHSA-mgcc-cww5-fp2q backport: RSA moduli above MaxRSAModulusBits are rejected, and a "jwk" header must not carry
++// private key material.
++func TestBackportRSAModulusLimit(t *testing.T) {
++	n := new(big.Int).Lsh(big.NewInt(1), 4096) // 4097 bits (MaxRSAModulusBits is 4096)
++	n.Add(n, big.NewInt(1))
++	raw := map[string]string{
++		"kty": "RSA",
++		"n":   base64.RawURLEncoding.EncodeToString(n.Bytes()),
++		"e":   "AQAB",
++	}
++	b, _ := json.Marshal(raw)
++	var k JSONWebKey
++	if err := k.UnmarshalJSON(b); err == nil || !strings.Contains(err.Error(), "modulus too large") {
++		t.Fatalf("oversized modulus accepted: %v", err)
++	}
++}
++
++func TestBackportPrivateJWKHeaderRejected(t *testing.T) {
++	key, err := rsa.GenerateKey(rand.Reader, 2048)
++	if err != nil {
++		t.Fatal(err)
++	}
++	priv, err := JSONWebKey{Key: key}.MarshalJSON()
++	if err != nil {
++		t.Fatal(err)
++	}
++	pub, err := JSONWebKey{Key: &key.PublicKey}.MarshalJSON()
++	if err != nil {
++		t.Fatal(err)
++	}
++	enc := func(jwk []byte) string {
++		h := `{"alg":"RS256","jwk":` + string(jwk) + `}`
++		return base64.RawURLEncoding.EncodeToString([]byte(h)) + ".e30.AAAA"
++	}
++	if _, err := ParseSigned(enc(priv)); err == nil {
++		t.Fatal("JWS with a private key in its jwk header was accepted")
++	}
++	obj, err := ParseSigned(enc(pub))
++	if err != nil {
++		t.Fatalf("JWS with a public jwk header rejected: %v", err)
++	}
++	if obj.Signatures[0].Header.JSONWebKey == nil {
++		t.Fatal("public jwk header not parsed")
++	}
++}
+diff --git a/cipher/cbc_hmac.go b/cipher/cbc_hmac.go
+index af029ce..a301ad9 100644
+--- a/cipher/cbc_hmac.go
++++ b/cipher/cbc_hmac.go
+@@ -51,6 +51,8 @@ func NewCBCHMAC(key []byte, newBlockCipher func([]byte) (cipher.Block, error)) (
+ 		hash = sha512.New384
+ 	case 32:
+ 		hash = sha512.New
++	default:
++		return nil, errors.New("go-jose/go-jose: invalid key size for CBC-HMAC")
+ 	}
+ 
+ 	return &cbcAEAD{
+@@ -176,7 +178,9 @@ func padBuffer(buffer []byte, blockSize int) []byte {
+ 
+ // Remove padding
+ func unpadBuffer(buffer []byte, blockSize int) ([]byte, error) {
+-	if len(buffer)%blockSize != 0 {
++	// A padded buffer can't be empty because an empty input is padded with
++	// `blockSize` bytes, resulting in a non-empty ciphertext.
++	if len(buffer) == 0 || len(buffer)%blockSize != 0 {
+ 		return nil, errors.New("go-jose/go-jose: invalid padding")
+ 	}
+ 
+diff --git a/cipher/cbc_hmac_test.go b/cipher/cbc_hmac_test.go
+index ae87825..fb5baae 100644
+--- a/cipher/cbc_hmac_test.go
++++ b/cipher/cbc_hmac_test.go
+@@ -76,6 +76,23 @@ func TestInvalidInputs(t *testing.T) {
+ 	}
+ }
+ 
++// TestOpenEmptyCiphertextContent tests that decryption of an empty ciphertext errors but
++// does not panic. Empty ciphertext in CBC-HMAC is invalid. If the plaintext was empty,
++// the ciphertext will be padded out to a single block.
++func TestOpenEmptyCiphertextContent(t *testing.T) {
++	key := make([]byte, 32)
++	aead, _ := NewCBCHMAC(key, aes.NewCipher)
++	ctx := aead.(*cbcAEAD)
++	nonce := make([]byte, 16)
++	aad := []byte("aad")
++
++	// Compute a valid auth tag so that we don't hit an early exit on that.
++	tag := ctx.computeAuthTag(aad, nonce, nil /*empty ciphertext*/)
++	if _, err := aead.Open(nil, nonce, tag /* tag || empty ciphertext */, aad); err == nil {
++		t.Error("expected error for empty ciphertext content, got nil")
++	}
++}
++
+ func TestVectorsAESCBC128(t *testing.T) {
+ 	// Source: http://tools.ietf.org/html/draft-ietf-jose-json-web-encryption-29#appendix-A.2
+ 	plaintext := []byte{
+@@ -258,11 +275,21 @@ func TestPadding(t *testing.T) {
+ 	}
+ }
+ 
++func TestUnpadEmpty(t *testing.T) {
++	_, err := unpadBuffer(nil, 16)
++	if err == nil || !strings.Contains(err.Error(), "padding") {
++		t.Errorf("expected padding-related error unpadding empty buffer, got %v", err)
++	}
++}
++
+ func TestInvalidKey(t *testing.T) {
+-	key := make([]byte, 30)
+-	_, err := NewCBCHMAC(key, aes.NewCipher)
+-	if err == nil {
+-		t.Error("should not be able to instantiate CBC-HMAC with invalid key")
++	// These key sizes product an invalid hash size (key size / 2)
++	for _, n := range []int{31, 47, 63} {
++		key := make([]byte, n)
++		_, err := NewCBCHMAC(key, aes.NewCipher)
++		if err == nil {
++			t.Error("should not be able to instantiate CBC-HMAC with invalid key")
++		}
+ 	}
+ }
+ 
+diff --git a/json/scanner.go b/json/scanner.go
+index ee6622e..3bd29f3 100644
+--- a/json/scanner.go
++++ b/json/scanner.go
+@@ -140,6 +140,10 @@ const (
+ 	parseArrayValue         // parsing array value
+ )
+ 
++// This limits the max nesting depth to prevent stack overflow.
++// This is permitted by https://tools.ietf.org/html/rfc7159#section-9
++const maxNestingDepth = 10000
++
+ // reset prepares the scanner for use.
+ // It must be called before calling s.step.
+ func (s *scanner) reset() {
+@@ -170,8 +174,13 @@ func (s *scanner) eof() int {
+ }
+ 
+ // pushParseState pushes a new parse state p onto the parse stack.
+-func (s *scanner) pushParseState(p int) {
+-	s.parseState = append(s.parseState, p)
++// an error state is returned if maxNestingDepth was exceeded, otherwise successState is returned.
++func (s *scanner) pushParseState(c byte, newParseState int, successState int) int {
++	s.parseState = append(s.parseState, newParseState)
++	if len(s.parseState) <= maxNestingDepth {
++		return successState
++	}
++	return s.error(c, "exceeded max depth")
+ }
+ 
+ // popParseState pops a parse state (already obtained) off the stack
+@@ -211,12 +220,10 @@ func stateBeginValue(s *scanner, c byte) int {
+ 	switch c {
+ 	case '{':
+ 		s.step = stateBeginStringOrEmpty
+-		s.pushParseState(parseObjectKey)
+-		return scanBeginObject
++		return s.pushParseState(c, parseObjectKey, scanBeginObject)
+ 	case '[':
+ 		s.step = stateBeginValueOrEmpty
+-		s.pushParseState(parseArrayValue)
+-		return scanBeginArray
++		return s.pushParseState(c, parseArrayValue, scanBeginArray)
+ 	case '"':
+ 		s.step = stateInString
+ 		return scanBeginLiteral
+diff --git a/jwe.go b/jwe.go
+index 1ba4ae0..8faddd8 100644
+--- a/jwe.go
++++ b/jwe.go
+@@ -151,15 +151,6 @@ func (parsed *rawJSONWebEncryption) sanitized() (*JSONWebEncryption, error) {
+ 		}
+ 	}
+ 
+-	// Note: this must be called _after_ we parse the protected header,
+-	// otherwise fields from the protected header will not get picked up.
+-	var err error
+-	mergedHeaders := obj.mergedHeaders(nil)
+-	obj.Header, err = mergedHeaders.sanitized()
+-	if err != nil {
+-		return nil, fmt.Errorf("go-jose/go-jose: cannot sanitize merged headers: %v (%v)", err, mergedHeaders)
+-	}
+-
+ 	if len(parsed.Recipients) == 0 {
+ 		obj.recipients = []recipientInfo{
+ 			{
+@@ -192,6 +183,15 @@ func (parsed *rawJSONWebEncryption) sanitized() (*JSONWebEncryption, error) {
+ 		}
+ 	}
+ 
++	// Note: this must be called _after_ we parse the protected header,
++	// otherwise fields from the protected header will not get picked up.
++	mergedHeaders := obj.mergedHeaders(nil)
++	var err error
++	obj.Header, err = mergedHeaders.sanitized()
++	if err != nil {
++		return nil, fmt.Errorf("go-jose/go-jose: cannot sanitize merged headers: %w", err)
++	}
++
+ 	obj.iv = parsed.Iv.bytes()
+ 	obj.ciphertext = parsed.Ciphertext.bytes()
+ 	obj.tag = parsed.Tag.bytes()
+diff --git a/jwk.go b/jwk.go
+index e402195..72dc00d 100644
+--- a/jwk.go
++++ b/jwk.go
+@@ -175,13 +175,31 @@ func (k JSONWebKey) MarshalJSON() ([]byte, error) {
+ }
+ 
+ // UnmarshalJSON reads a key from its JSON representation.
+-func (k *JSONWebKey) UnmarshalJSON(data []byte) (err error) {
++//
++// Returns ErrUnsupportedKeyType for unrecognized or unsupported "kty" header values.
++//
++// Directly unmarshaling a JWK is not safe for untrusted input.
++func (k *JSONWebKey) UnmarshalJSON(data []byte) error {
++	return k.unmarshalJSON(data, true)
++}
++
++// unmarshalJSON reads a key from its JSON representation.
++//
++// If allowPrivate is false, a JWK with private key material is rejected and the
++// function is safe for use against untrusted input.
++func (k *JSONWebKey) unmarshalJSON(data []byte, allowPrivate bool) (err error) {
+ 	var raw rawJSONWebKey
+ 	err = json.Unmarshal(data, &raw)
+ 	if err != nil {
+ 		return err
+ 	}
+ 
++	if !allowPrivate &&
++		(raw.K != nil || raw.D != nil || raw.P != nil || raw.Q != nil ||
++			raw.Dp != nil || raw.Dq != nil || raw.Qi != nil) {
++		return errors.New("go-jose/go-jose: JWK contains private parameters")
++	}
++
+ 	certs, err := parseCertificateChain(raw.X5c)
+ 	if err != nil {
+ 		return fmt.Errorf("go-jose/go-jose: failed to unmarshal x5c field: %s", err)
+@@ -481,13 +499,25 @@ func (k *JSONWebKey) Valid() bool {
+ 	return true
+ }
+ 
++// MaxRSAModulusBits is the largest RSA modulus size, in bits, that will be
++// accepted when parsing a JWK. Applications that need larger keys can raise
++// this limit.
++//
++// If modifying MaxRSAModulusBits, do it before any parsing occurs.
++var MaxRSAModulusBits = 4096
++
+ func (key rawJSONWebKey) rsaPublicKey() (*rsa.PublicKey, error) {
+ 	if key.N == nil || key.E == nil {
+ 		return nil, fmt.Errorf("go-jose/go-jose: invalid RSA key, missing n/e values")
+ 	}
+ 
++	n := key.N.bigInt()
++	if n.BitLen() > MaxRSAModulusBits {
++		return nil, fmt.Errorf("go-jose/go-jose: invalid RSA key, modulus too large")
++	}
++
+ 	return &rsa.PublicKey{
+-		N: key.N.bigInt(),
++		N: n,
+ 		E: key.E.toInt(),
+ 	}, nil
+ }
+@@ -628,16 +658,23 @@ func (key rawJSONWebKey) rsaPrivateKey() (*rsa.PrivateKey, error) {
+ 		return nil, fmt.Errorf("go-jose/go-jose: invalid RSA private key, missing %s value(s)", strings.Join(missing, ", "))
+ 	}
+ 
++	n := key.N.bigInt()
++	if n.BitLen() > MaxRSAModulusBits {
++		return nil, fmt.Errorf("go-jose/go-jose: invalid RSA key, modulus too large")
++	}
++
++	p, q := key.P.bigInt(), key.Q.bigInt()
++	if p.BitLen()+q.BitLen() > n.BitLen()+1 || new(big.Int).Mul(p, q).Cmp(n) != 0 {
++		return nil, errors.New("go-jose/go-jose: invalid RSA private key, p * q != n")
++	}
++
+ 	rv := &rsa.PrivateKey{
+ 		PublicKey: rsa.PublicKey{
+-			N: key.N.bigInt(),
++			N: n,
+ 			E: key.E.toInt(),
+ 		},
+-		D: key.D.bigInt(),
+-		Primes: []*big.Int{
+-			key.P.bigInt(),
+-			key.Q.bigInt(),
+-		},
++		D:      key.D.bigInt(),
++		Primes: []*big.Int{p, q},
+ 	}
+ 
+ 	if key.Dp != nil {
+diff --git a/shared.go b/shared.go
+index 489a04e..b71ff6a 100644
+--- a/shared.go
++++ b/shared.go
+@@ -282,9 +282,10 @@ func (parsed rawHeader) getEPK() (*JSONWebKey, error) {
+ 	if v == nil {
+ 		return nil, nil
+ 	}
+-	var epk *JSONWebKey
+-	err := json.Unmarshal(*v, &epk)
+-	if err != nil {
++	// RFC 7518 Section 4.6.1.1: the "epk" header is the ephemeral public key
++	// of the originator. Reject private key material before parsing it.
++	epk := new(JSONWebKey)
++	if err := epk.unmarshalJSON(*v, false); err != nil {
+ 		return nil, err
+ 	}
+ 	return epk, nil
+@@ -310,15 +311,14 @@ func (parsed rawHeader) getTag() (*byteBuffer, error) {
+ 	return parsed.getByteBuffer(headerTag)
+ }
+ 
+-// getJWK extracts parsed "jwk" from the raw JSON.
++// getJWK extracts parsed "jwk" from the raw JSON (a public key: private key material is rejected).
+ func (parsed rawHeader) getJWK() (*JSONWebKey, error) {
+ 	v := parsed[headerJWK]
+ 	if v == nil {
+ 		return nil, nil
+ 	}
+-	var jwk *JSONWebKey
+-	err := json.Unmarshal(*v, &jwk)
+-	if err != nil {
++	jwk := new(JSONWebKey)
++	if err := jwk.unmarshalJSON(*v, false); err != nil {
+ 		return nil, err
+ 	}
+ 	return jwk, nil
+@@ -383,10 +383,14 @@ func (parsed rawHeader) sanitized() (h Header, err error) {
+ 		}
+ 		switch k {
+ 		case headerJWK:
+-			var jwk *JSONWebKey
+-			err = json.Unmarshal(*v, &jwk)
++			// RFC 7515 Section 4.1.3 and RFC 7516 Section 4.1.5: the "jwk"
++			// header is the public key that corresponds to the key used to
++			// sign the JWS or encrypt the JWE. Reject private key material
++			// before parsing it.
++			jwk := new(JSONWebKey)
++			err = jwk.unmarshalJSON(*v, false)
+ 			if err != nil {
+-				err = fmt.Errorf("failed to unmarshal JWK: %v: %#v", err, string(*v))
++				err = fmt.Errorf("failed to unmarshal JWK: %w", err)
+ 				return
+ 			}
+ 			h.JSONWebKey = jwk

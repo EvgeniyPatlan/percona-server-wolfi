@@ -48,6 +48,8 @@ environment:
       - glibc-dev
       # pmm and the toolkit say `go 1.27.x` in go.mod, the others older; GOTOOLCHAIN=local keeps it from downloading
       - go-1.27
+      # patches/go-jose-v3-*.patch
+      - patch
 
 pipeline:
   # Sources: every repository at its pinned commit (fetched by hash, checked), as pmm-submodules v@@pmm_version@@
@@ -125,6 +127,26 @@ pipeline:
           done
         )
       done
+
+  # go-jose/v3 has no release with the GHSA-mgcc-cww5-fp2q fix (v4 only, a different import path), so nomad is built
+  # against v3.0.5 (the version nomad requires, checksum-verified by go mod download) with the backported fix of
+  # patches/go-jose-v3-GHSA-mgcc-cww5-fp2q.patch (its header says what and why), through a go.mod replace.
+  - name: Patched go-jose v3 for nomad
+    runs: |
+      set -eu
+      export GOTOOLCHAIN=local GOFLAGS=-mod=mod GOMODCACHE=/var/cache/melange/gomodcache
+      m=github.com/go-jose/go-jose/v3
+      cd nomad
+      test "$(go list -m -f '{{.Version}}' "$m")" = v3.0.5
+      src=$(go mod download -json "$m@v3.0.5" | sed -n 's/^[[:space:]]*"Dir": "\(.*\)",$/\1/p')
+      test -f "$src/jwk.go"
+      cp -r "$src" ../go-jose-v3
+      chmod -R u+w ../go-jose-v3
+      patch -d ../go-jose-v3 -p1 --forward < ../patches/go-jose-v3-GHSA-mgcc-cww5-fp2q.patch
+      grep -q 'MaxRSAModulusBits = 4096' ../go-jose-v3/jwk.go
+      go mod edit -replace "$m=../go-jose-v3"
+      test "$(go list -m -f '{{.Replace.Path}}' "$m")" = ../go-jose-v3
+      (cd ../go-jose-v3 && go test -run Backport .)
 
   # PMM_RELEASE_* as build-client-binary exports them: version @@pmm_version@@, the full commit, an empty branch;
   # the timestamp is pmm_commit's committer time instead of `date +%s` (reproducible).

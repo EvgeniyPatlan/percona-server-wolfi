@@ -53,9 +53,11 @@ Already in Wolfi: `socat`, `jq`, `qpress`, `pv`, `libev`, `lz4`, `zstd`, `aws-cl
 
 ## Open findings
 
-- PMM client: go-jose/v3 v3.0.5 in nomad, GHSA-mgcc-cww5-fp2q (High), GHSA-vvm8-gf78-28g4 and GHSA-4w3g-jfj2-cw2q
-  (Medium). No fixed v3 release; reachable (JWS headers can embed a JWK), so no VEX. Owner ruling 2026-11-18: leave
-  open; re-check when nomad (PMM's `pmm_nomad_commit`) moves to go-jose v4. `make scan` fails for pmm-client until then.
+- PMM client: go-jose/v3 v3.0.5 in nomad (GHSA-mgcc-cww5-fp2q High, GHSA-vvm8-gf78-28g4 and GHSA-4w3g-jfj2-cw2q
+  Medium) has no fixed v3 release. Fixed by a backport patch (`packages/pmm-client/patches/`, 2026-11-18); drop it
+  when nomad (PMM's `pmm_nomad_commit`) moves to go-jose v4.
+- ProxySQL: CVE-2026-102664 (High) in Wolfi's proxysql 3.0.9, no fixed release yet. Wolfi's perl: CVE-2026-15534
+  (Medium), no fixed release yet.
 
 ## Out of scope for now
 
