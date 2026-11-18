@@ -31,6 +31,48 @@ pipeline:
       expected-commit: "@@ps_operator_commit@@"
       destination: op-src
 
+  # CVE fixes: go_bumps (versions/9.7.yaml) raises Go modules that have known CVEs at the upstream pins to their fixed
+  # releases, in each module below whose packages import them (never lowering a version; a module that go.mod replaces fails
+  # the build), with go get + go mod tidy as Wolfi's go/bump does. Listed in docs/deviations.md.
+  - name: Bump Go modules (go_bumps)
+    runs: |
+      set -eu
+      export GOTOOLCHAIN=local GOFLAGS= GOMODCACHE=/var/cache/melange/gomodcache
+      for d in op-src; do
+        test -f "$d/go.mod"
+        (
+          cd "$d"
+          changed=0
+          # modules the packages of this module import (what gets linked), "<path> <version>|replaced"
+          used() { go list -e -deps -f '{{with .Module}}{{.Path}} {{if .Replace}}replaced{{else}}{{.Version}}{{end}}{{end}}' ./... | sort -u; }
+          used > ../go-used.txt
+          for m in @@go_bumps@@; do
+            mod=${m%@*} want=${m#*@}
+            cur=$(awk -v m="$mod" '$1 == m {print $2}' ../go-used.txt)
+            [ -n "$cur" ] || continue
+            if [ "$cur" = replaced ]; then echo "$d: $mod is replaced in go.mod" >&2; exit 1; fi
+            # the version now (an earlier bump may already have raised it): never ask go get for a lower one
+            cur=$(go list -m -f '{{.Version}}' "$mod")
+            [ "$cur" != "$want" ] || continue
+            [ "$(printf '%s\n' "$cur" "$want" | sort -V | tail -n1)" = "$want" ] || continue
+            echo "$d: $mod $cur -> $want"
+            go get "$mod@$want"
+            changed=1
+          done
+          if [ "$changed" = 1 ]; then go mod tidy; fi
+          used > ../go-used.txt
+          for m in @@go_bumps@@; do
+            mod=${m%@*} want=${m#*@}
+            cur=$(awk -v m="$mod" '$1 == m {print $2}' ../go-used.txt)
+            [ -n "$cur" ] || continue
+            if [ "$(printf '%s\n' "$cur" "$want" | sort -V | tail -n1)" != "$cur" ]; then
+              echo "$d: $mod is $cur after the bump, want >= $want" >&2
+              exit 1
+            fi
+          done
+        )
+      done
+
   # Same commands and ldflags as build/Dockerfile (CGO_ENABLED=0, GOOS=linux, `-w -s -X main.GitCommit -X main.GitBranch
   # -X main.BuildTime`; mysql-state-monitor gets `-w -s` only). The values are what e2e-tests/build passes for a
   # release: GIT_COMMIT is the tag's commit, GIT_BRANCH the release branch, BUILD_TIME from SOURCE_DATE_EPOCH here

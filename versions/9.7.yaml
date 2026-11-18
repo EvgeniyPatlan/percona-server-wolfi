@@ -304,3 +304,9 @@ pmm_redis_exporter_version: "1.92.1"
 pmm_toolkit_commit: "bdc6b45717a2d382c507afc006a87ebe5429f1e1"
 # percona/pmm-client:3 == 3.10.0 (index digest, 2026-11-16)
 official_pmm_client_image: "docker.io/percona/pmm-client@sha256:b407188b183bc61ab202914f2128f171dd2d0cd411396a05bb92f3e73348a416"
+
+# --- Go module bumps (CVE fixes) ---
+# Fixed releases of Go modules that grype flags (2026-11-17) at the versions the upstream go.mod files pin, applied by
+# the PS/PXC operator, Toolkit and PMM client recipes ("Bump Go modules" step: go get + go mod tidy) in every Go
+# module that has them, never lowering a version. No fixed release: github.com/go-jose/go-jose/v3 (nomad).
+go_bumps: "github.com/klauspost/compress@v1.20.2 golang.org/x/net@v0.60.0 golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.83.2 github.com/cert-manager/cert-manager@v1.20.3 go.opentelemetry.io/otel@v1.47.0 go.opentelemetry.io/otel/trace@v1.47.0 go.opentelemetry.io/otel/sdk@v1.47.0 github.com/go-jose/go-jose/v4@v4.1.6 github.com/hashicorp/go-getter@v1.8.10 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream@v1.7.8 github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs@v1.65.0 github.com/aws/aws-sdk-go-v2/service/s3@v1.97.3"
