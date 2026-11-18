@@ -1,0 +1,12 @@
+# Tool containers used only by the Jenkins jobs (jenkins/scripts/), pinned by index digest. Kept out of
+# versions/tools.yaml so a change here never touches the build inputs. Resolved 2026-11-18 with
+# `docker buildx imagetools inspect`. Tag shown in the comment.
+# amazon/aws-cli:2.39.3 (2026-10-30): S3 cache (jenkins/scripts/cache.sh)
+aws_cli: "amazon/aws-cli@sha256:d557b3524475d70dd3104cf44d96568ee3188897b73a6ece2b37aa50e1af362f"
+# ghcr.io/oras-project/oras:v1.3.6 (2026-10-24): copies an image with its referrers (the cosign signature and SBOM
+# attestation bundles) to Docker Hub, digest unchanged (jenkins/scripts/publish.sh). `cosign copy` does not copy
+# cosign 3 bundles.
+oras: "ghcr.io/oras-project/oras@sha256:9cfb578be975b762fd898b9d004243d8003aeb807a3e15b2ed212cdd1326c9eb"
+# jenkins/jenkins:2.580.2-lts-jdk21 (2026-10-28): throwaway Jenkins whose declarative validator checks the pipelines
+# (jenkins/scripts/lint-pipelines.sh, make lint-jenkins)
+jenkins: "jenkins/jenkins@sha256:74401de6a6f92e1afe1b02d1c8e3d0c33f263bfb5275dd8813f9150355f2367b"

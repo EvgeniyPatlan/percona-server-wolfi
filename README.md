@@ -91,6 +91,11 @@ still go through `make all`.
 
 Quick checks without docker builds: `make lint test-unit`.
 
+Jenkins (`jenkins/`, see `jenkins/README.md`): three jobs in the Percona-Lab/jenkins-pipelines layout. A release
+job runs `make all` and publishes the signed images to Docker Hub as `<tag>-wolfi` (same digests, signatures and SBOM
+attestations verified there). An incremental job runs on every push and publishes `-wolfi-ci` tags to `perconalab`.
+A nightly job runs MTR. The jobs run on ephemeral agents, with build caches in S3 and keys in Jenkins credentials.
+
 Differences from the official image and from Percona's DEB/RPM builds, each with its reason: `docs/deviations.md`.
 Design and its decisions: `docs/design.md`; pins and their sources: `docs/research.md`; what to build next (the rest
 of the operator stacks): `docs/roadmap.md`.

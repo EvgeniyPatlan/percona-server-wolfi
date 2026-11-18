@@ -169,6 +169,12 @@ writes `out/report-<timestamp>.tar.gz` (logs, results, versions, MANIFEST with g
 off the host (`scp`) together with any commits you made (keys, lock files, the V8 hash). `make all` runs `make report` itself after phase-a/phase-b, also when they fail, and exits with the failure's status;
 after a failure of any other single target run `make report` by hand.
 
+## On Jenkins
+
+`jenkins/README.md`: the same targets as jobs (release, incremental on push, nightly MTR) on ephemeral agents, the
+signing keys from Jenkins credentials, caches in S3, and publication on Docker Hub as `<tag>-wolfi`. The first-run
+steps above (keys, `v8_src_sha256`, lock files) are the same; the release job's preflight stops when one is missing.
+
 ## Reference by component
 
 ## Building packages

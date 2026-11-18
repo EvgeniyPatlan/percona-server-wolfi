@@ -1,0 +1,23 @@
+- job:
+    name: ps-wolfi-mtr-nightly
+    project-type: pipeline
+    description: |
+        Nightly upstream MTR suites against the packages of the last incremental build. Report only.
+        Do not edit this job through the web!
+    concurrent: false
+    properties:
+      - build-discarder:
+          num-to-keep: 30
+      - github:
+          url: https://github.com/EvgeniyPatlan/percona-server-wolfi/
+    triggers:
+      - timed: 'H 1 * * *'
+    pipeline-scm:
+      scm:
+        - git:
+            url: https://github.com/EvgeniyPatlan/percona-server-wolfi.git
+            branches:
+              - 'main'
+            wipe-workspace: false
+      lightweight-checkout: true
+      script-path: jenkins/ps-wolfi-mtr-nightly.groovy

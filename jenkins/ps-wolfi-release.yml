@@ -1,0 +1,21 @@
+- job:
+    name: ps-wolfi-release
+    project-type: pipeline
+    description: |
+        Full release build of the Wolfi images (RELEASE=1 make all) and their publication on Docker Hub as -wolfi tags.
+        Do not edit this job through the web!
+    concurrent: false
+    properties:
+      - build-discarder:
+          num-to-keep: 30
+      - github:
+          url: https://github.com/EvgeniyPatlan/percona-server-wolfi/
+    pipeline-scm:
+      scm:
+        - git:
+            url: https://github.com/EvgeniyPatlan/percona-server-wolfi.git
+            branches:
+              - 'main'
+            wipe-workspace: false
+      lightweight-checkout: true
+      script-path: jenkins/ps-wolfi-release.groovy

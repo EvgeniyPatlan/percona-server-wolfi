@@ -1,0 +1,23 @@
+- job:
+    name: ps-wolfi-incremental
+    project-type: pipeline
+    description: |
+        On every push to main: rebuild what changed, test, scan and sign it, push -wolfi-ci tags to perconalab.
+        Do not edit this job through the web!
+    concurrent: false
+    properties:
+      - build-discarder:
+          num-to-keep: 30
+      - github:
+          url: https://github.com/EvgeniyPatlan/percona-server-wolfi/
+    triggers:
+      - github
+    pipeline-scm:
+      scm:
+        - git:
+            url: https://github.com/EvgeniyPatlan/percona-server-wolfi.git
+            branches:
+              - 'main'
+            wipe-workspace: false
+      lightweight-checkout: true
+      script-path: jenkins/ps-wolfi-incremental.groovy

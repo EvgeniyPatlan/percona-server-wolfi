@@ -21,7 +21,7 @@ include mk/images.mk
 include mk/tests.mk
 include mk/supply.mk
 
-.PHONY: test-unit lint check-disk report phase-a phase-b all build
+.PHONY: test-unit lint lint-jenkins check-disk report phase-a phase-b all build
 
 # End-to-end, in order (see docs/BUILD-HOST.md). Prerequisites run in the listed order, never in parallel.
 # REPRO=0 skips the second package build and the comparison in phase-a (not for a release).
@@ -47,7 +47,7 @@ test-unit: $(BATS)
 # SC2329: bats tests define stub functions that are invoked indirectly via `run`.
 # SC2030/SC2031: each @test runs in its own subshell, so exported test state is intentionally local.
 SC_BATS_EXCLUDE := SC2154,SC1090,SC1091,SC2034,SC2317,SC2329,SC2030,SC2031
-SH_FILES = $(shell find scripts tests packages -name '*.sh' -o -name '*.bash' | sort)
+SH_FILES = $(shell find scripts tests packages jenkins -name '*.sh' -o -name '*.bash' | sort)
 BATS_FILES = $(shell find tests -name '*.bats' | sort)
 
 # shellcheck runs in its pinned container; bats files are checked as bash.
@@ -55,6 +55,18 @@ lint:
 	$(call logged, source scripts/lib/common.sh; \
 	  tool shellcheck -- -x -P SCRIPTDIR $(SH_FILES); \
 	  tool shellcheck -- -s bash -e $(SC_BATS_EXCLUDE) $(BATS_FILES))
+
+# Jenkins jobs (jenkins/): the JJB definitions through `jenkins-jobs test` (pinned jenkins-job-builder in the pinned
+# python image; pip needs network) and the declarative syntax of each pipeline through a throwaway Jenkins
+# (jenkins/scripts/lint-pipelines.sh, image pinned in jenkins/tools.yaml; its first start installs the plugins).
+JJB_VERSION ?= 6.5.0
+lint-jenkins:
+	$(call logged, source scripts/lib/common.sh; \
+	  tool python --user "$$(id -u):$$(id -g)" -e HOME=/tmp -- sh -c \
+	    'pip install -q --user --no-warn-script-location jenkins-job-builder==$(JJB_VERSION) "setuptools<81" && \
+	     /tmp/.local/bin/jenkins-jobs test -o /tmp/jjb "$$1" > /dev/null && echo "JJB: OK"' \
+	    sh "$$(ls jenkins/ps-wolfi-*.yml | paste -sd:)"; \
+	  jenkins/scripts/lint-pipelines.sh jenkins/ps-wolfi-*.groovy)
 
 check-disk:
 	$(call logged, MIN_GB=$(MIN_GB) scripts/check-disk.sh)
