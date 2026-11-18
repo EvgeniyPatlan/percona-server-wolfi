@@ -51,6 +51,12 @@ Already in Wolfi: `socat`, `jq`, `qpress`, `pv`, `libev`, `lz4`, `zstd`, `aws-cl
 5. PXC with Galera and garbd, then ProxySQL: the PXC operator stack.
 6. PMM client: the largest item, shared with the MongoDB and PostgreSQL stacks.
 
+## Open findings
+
+- PMM client: go-jose/v3 v3.0.5 in nomad, GHSA-mgcc-cww5-fp2q (High), GHSA-vvm8-gf78-28g4 and GHSA-4w3g-jfj2-cw2q
+  (Medium). No fixed v3 release; reachable (JWS headers can embed a JWK), so no VEX. Owner ruling 2026-11-18: leave
+  open; re-check when nomad (PMM's `pmm_nomad_commit`) moves to go-jose v4. `make scan` fails for pmm-client until then.
+
 ## Out of scope for now
 
 Other Percona families with images: MongoDB (server, operator, PBM, clustersync, search, `mongodb_exporter`),

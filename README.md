@@ -373,7 +373,10 @@ the Go module bumps (`go_bumps` in `versions/9.7.yaml`, 2026-11-18): the officia
 pins carry the vulnerable klauspost/compress, golang.org/x/net, golang.org/x/text, grpc, cert-manager, OpenTelemetry,
 go-jose/v4, go-getter and AWS SDK versions; the Wolfi builds raise them to the fixed releases. What remains has no fix
 yet: go-jose/v3 in PMM's nomad (1 High, 2 Medium), a Medium in Wolfi's perl (Toolkit, PMM client, ProxySQL) and one
-High in ProxySQL. Only grype reports these; trivy finds nothing in the Wolfi images. The PMM client image is the one Wolfi image
+High in ProxySQL. Only grype reports these; trivy finds nothing in the Wolfi images. The go-jose/v3 High
+(GHSA-mgcc-cww5-fp2q, a DoS when parsing RSA keys in a JWK) is reachable in nomad (it parses signed tokens, whose header
+can carry a JWK), so it gets no VEX entry: `make scan` stays red for pmm-client until nomad moves to go-jose v4 or v3
+gets a fix (nomad `main` still uses v3.0.5 as of 2026-11-18). The PMM client image is the one Wolfi image
 that is larger than the official one.
 
 The CVE gap is mostly the distro base: the official image's High findings are all in RHEL libraries (krb5-libs,
