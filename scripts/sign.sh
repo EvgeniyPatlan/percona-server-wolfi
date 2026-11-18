@@ -63,7 +63,13 @@ if [[ $mode == sign ]]; then
     sbom=${cands[0]}
   fi
   sbom=$(cd "$(dirname "$sbom")" && pwd)/$(basename "$sbom")
-  [[ $sbom == "$PWD"/* ]] || cosign+=(-v "$(dirname "$sbom"):$(dirname "$sbom"):ro")
+  # The container sees the repo at /work (its working dir): a path inside the repo is passed relative to it, any
+  # other dir is mounted at its own path.
+  if [[ $sbom == "$PWD"/* ]]; then
+    sbom=${sbom#"$PWD"/}
+  else
+    cosign+=(-v "$(dirname "$sbom"):$(dirname "$sbom"):ro")
+  fi
   cosign+=(-v "$KEY_DIR/cosign.key:/keys/cosign.key:ro")
   common=(--key /keys/cosign.key --allow-http-registry --yes --signing-config keys/cosign-signing-config.json)
   log_info "signing $ref"

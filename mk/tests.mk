@@ -136,7 +136,7 @@ mtr-nightly:
 	  mkdir -p out/results; \
 	  $(DOCKER) run --rm --user 0 --tmpfs /mtrvar:exec$(comma)size=$(MTR_TMPFS_SIZE) \
 	    -v "$$PWD:/work:ro" -v "$$PWD/out/repo:/repo:ro" -v "$$PWD/out/results:/results" \
-	    -v "$$(realpath "$$APK_PUBKEY"):/etc/apk/keys/ps-wolfi.rsa.pub:ro" \
+	    -v "$$(realpath "$$APK_PUBKEY"):/etc/apk/keys/$$APK_KEY_NAME.rsa.pub:ro" \
 	    -e SUITES="$(SUITES)" -e PARALLEL="$(MTR_PARALLEL)" -e MTR_ARGS="$(MTR_ARGS)" -e MTR_EXTRA_PKGS="$(MTR_EXTRA_PKGS)" \
 	    -e HOST_UID="$$(id -u)" -e HOST_GID="$$(id -g)" \
 	    --entrypoint /work/scripts/mtr-container.sh "$$(vars_get versions/tools.yaml wolfi_sdk)")
